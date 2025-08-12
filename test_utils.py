@@ -6,6 +6,8 @@ from dp_accounting.pld import privacy_loss_distribution
 
 from pmf_utils import create_test_pmfs
 from pmf_compare import calc_W1_dist
+from analytic_derivation import subsampled_gaussian_probabilities_from_losses
+from subsample_pld_pmf import dp_accounting_pmf_to_loss_probs
 
  
 
@@ -34,8 +36,25 @@ def run_experiment(
     base_pmf = test_pmfs['unamplified_pmf']
     our_pmf = subsample_pld_pmf(base_pmf, sampling_prob)
 
+    # Build an analytic PMF on the same loss grid using the provided formula
+    # Extract the integer-index loss grid from the library PMF and map to losses
+    lib_losses, _ = dp_accounting_pmf_to_loss_probs(lib_pmf)
+    analytic_probs = subsampled_gaussian_probabilities_from_losses(
+        sigma=sigma,
+        sampling_prob=sampling_prob,
+        losses=lib_losses,
+    )
+    from subsample_pld_pmf import loss_probs_to_dp_accounting_pmf  # local import to avoid cycles
+    analytic_pmf = loss_probs_to_dp_accounting_pmf(
+        losses=lib_losses,
+        probs=analytic_probs,
+        discretization=lib_pmf._discretization,
+        pessimistic_estimate=lib_pmf._pessimistic_estimate,
+    )
+
     # W1 distance
     w1_distance = calc_W1_dist(our_pmf, lib_pmf)
+    w1_analytic = calc_W1_dist(analytic_pmf, lib_pmf)
 
     # Epsilon from delta arrays (analytical/ref/ours)
     eps_analytical, eps_ref, eps_ours = epsilon_from_deltas(
@@ -46,14 +65,20 @@ def run_experiment(
         our_pmf=our_pmf,
         sensitivity=1.0,
     )
+    # Epsilon via analytic PMF
+    analytic_pld = privacy_loss_distribution.PrivacyLossDistribution(pmf_remove=analytic_pmf)
+    eps_analytic_pmf = [analytic_pld.get_epsilon_for_delta(d) for d in delta_values]
 
     return {
         'w1_distance': w1_distance,
+        'w1_distance_analytic': w1_analytic,
         'epsilon_analytical': eps_analytical,
         'epsilon_ref': eps_ref,
         'epsilon_ours': eps_ours,
+        'epsilon_analytic_pmf': eps_analytic_pmf,
         'lib_pmf': lib_pmf,
         'our_pmf': our_pmf,
+        'analytic_pmf': analytic_pmf,
     }
 
 def epsilon_from_deltas(

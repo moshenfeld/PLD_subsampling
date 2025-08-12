@@ -51,6 +51,9 @@ def dp_accounting_pmf_to_loss_probs(pld_pmf: 'PLDPmf') -> Tuple[np.ndarray, np.n
     # Check if it's SparsePLDPmf format (has _loss_probs directly)
     elif isinstance(pld_pmf, SparsePLDPmf):
         loss_probs = pld_pmf._loss_probs.copy()
+        if len(loss_probs) == 0:
+            # Empty sparse PMF: return empty arrays
+            return np.array([], dtype=np.float64), np.array([], dtype=np.float64)
         # Ensure monotone losses and aligned probs by sorting keys
         losses_sparse = np.array(list(loss_probs.keys()),   dtype=np.int64)
         probs_sparse  = np.array(list(loss_probs.values()), dtype=np.float64)

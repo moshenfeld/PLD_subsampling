@@ -27,11 +27,14 @@ def run_all_experiments():
             for q in q_values:
                 result = run_experiment(sigma, q, discretization, delta_values)
                 w1 = result['w1_distance']
+                w1_an = result.get('w1_distance_analytic')
                 eps_a = result['epsilon_analytical']
                 eps_r = result['epsilon_ref']
                 eps_o = result['epsilon_ours']
+                eps_an = result.get('epsilon_analytic_pmf')
                 lib_pmf = result['lib_pmf']
                 our_pmf = result['our_pmf']
+                analytic_pmf = result.get('analytic_pmf')
                 print(f"\nσ={sigma}, q={q}, disc={discretization:g}, W1={w1:.6g}")
                 print(f"{'Delta':<8} {'Analytical':<15} {'Ref':<15} {'Ours':<15}")
                 print("-" * 60)
@@ -52,11 +55,11 @@ def run_all_experiments():
                 # Generate plots per configuration
                 ensure_plots_dir('plots')
                 # Create and save CDF plot
-                fig_cdf = create_pmf_cdf_plot(our_pmf=our_pmf, library_pmf=lib_pmf, w1=w1, title_suffix=f'sigma={sigma}, q={q}, disc={discretization:e}')
+                fig_cdf = create_pmf_cdf_plot(our_pmf=our_pmf, library_pmf=lib_pmf, w1=w1, title_suffix=f'sigma={sigma}, q={q}, disc={discretization:e}', analytic_pmf=analytic_pmf, w1_analytic=w1_an)
                 fig_cdf.savefig(os.path.join('plots', f'pmf_cdf_sigma{sigma}_q{q}_d{discretization:e}.png'))
                 plt.close(fig_cdf)
                 # Create and save epsilon-vs-delta plot
-                fig_eps = create_epsilon_delta_plot(delta_values=delta_values, eps_a=eps_a, eps_r=eps_r, eps_o=eps_o, log_x_axis=True, log_y_axis=True, title_suffix=f'sigma={sigma}, q={q}, disc={discretization:g}')
+                fig_eps = create_epsilon_delta_plot(delta_values=delta_values, eps_a=eps_a, eps_r=eps_r, eps_o=eps_o, log_x_axis=True, log_y_axis=True, title_suffix=f'sigma={sigma}, q={q}, disc={discretization:g}', eps_analytic_pmf=eps_an)
                 fig_eps.savefig(os.path.join('plots', f'epsilon_vs_delta_sigma{sigma}_q{q}_d{discretization:e}.png'))
                 plt.close(fig_eps)
 

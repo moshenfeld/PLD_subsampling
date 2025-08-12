@@ -10,18 +10,28 @@ def ensure_plots_dir(path: str = "plots") -> str:
     return path
 
 
-def create_pmf_cdf_plot(our_pmf, library_pmf, w1, title_suffix: str = ''):
+def create_pmf_cdf_plot(our_pmf, library_pmf, w1, title_suffix: str = '', analytic_pmf=None, w1_analytic=None):
     our_losses, our_probs = dp_accounting_pmf_to_loss_probs(our_pmf)
     lib_losses, lib_probs = dp_accounting_pmf_to_loss_probs(library_pmf)
 
-    all_losses = np.unique(np.concatenate([our_losses, lib_losses]))
+    if analytic_pmf is not None:
+        an_losses, an_probs = dp_accounting_pmf_to_loss_probs(analytic_pmf)
+        all_losses = np.unique(np.concatenate([our_losses, lib_losses, an_losses]))
+    else:
+        all_losses = np.unique(np.concatenate([our_losses, lib_losses]))
     finite_losses = np.sort(all_losses[np.isfinite(all_losses)])
     our_map = dict(zip(our_losses, our_probs))
     lib_map = dict(zip(lib_losses, lib_probs))
+    if analytic_pmf is not None:
+        an_map = dict(zip(an_losses, an_probs))
     our_grid = np.array([our_map.get(x, 0.0) for x in finite_losses])
     lib_grid = np.array([lib_map.get(x, 0.0) for x in finite_losses])
+    if analytic_pmf is not None:
+        an_grid = np.array([an_map.get(x, 0.0) for x in finite_losses])
     our_cdf = np.cumsum(our_grid)
     lib_cdf = np.cumsum(lib_grid)
+    if analytic_pmf is not None:
+        an_cdf = np.cumsum(an_grid)
 
     fig = plt.figure(figsize=(14, 10))
     gs = fig.add_gridspec(2, 2, height_ratios=[2, 1])
@@ -29,7 +39,12 @@ def create_pmf_cdf_plot(our_pmf, library_pmf, w1, title_suffix: str = ''):
     ax_main = fig.add_subplot(gs[0, :])
     ax_main.plot(finite_losses, our_cdf, 'b-', label='Our CDF', alpha=0.8)
     ax_main.plot(finite_losses, lib_cdf, 'r--', label='Library CDF', alpha=0.8)
-    title = f'CDF Comparison (W1={w1:.6g})'
+    if analytic_pmf is not None:
+        ax_main.plot(finite_losses, an_cdf, 'g-.', label='Analytic PMF CDF', alpha=0.8)
+    if w1_analytic is not None:
+        title = f'CDF Comparison (W1 ours={w1:.6g}, analytic={w1_analytic:.6g})'
+    else:
+        title = f'CDF Comparison (W1 ours={w1:.6g})'
     if title_suffix:
         title += f' — {title_suffix}'
     ax_main.set_title(title)
@@ -104,6 +119,8 @@ def create_pmf_cdf_plot(our_pmf, library_pmf, w1, title_suffix: str = ''):
     ax_left = fig.add_subplot(gs[1, 0])
     ax_left.plot(finite_losses, our_cdf, 'b-', alpha=0.8)
     ax_left.plot(finite_losses, lib_cdf, 'r--', alpha=0.8)
+    if analytic_pmf is not None:
+        ax_left.plot(finite_losses, an_cdf, 'g-.', alpha=0.8)
     ax_left.set_yscale('log')
     # Focus x-limits via adaptive log-gap band; fallback to default span
     left_win = window_from_metric(left_weighted, left_idx, left_mask) if finite_losses.size else None
@@ -136,6 +153,8 @@ def create_pmf_cdf_plot(our_pmf, library_pmf, w1, title_suffix: str = ''):
     # Plot CDF (not 1-CDF)
     ax_right.plot(finite_losses, our_cdf, 'b-', alpha=0.8)
     ax_right.plot(finite_losses, lib_cdf, 'r--', alpha=0.8)
+    if analytic_pmf is not None:
+        ax_right.plot(finite_losses, an_cdf, 'g-.', alpha=0.8)
     # Focus x-limits via adaptive log-gap band; fallback to default span
     right_win = window_from_metric(right_weighted, right_idx, right_mask if 'right_mask' in locals() else (avg_cdf > 0.5)) if finite_losses.size else None
     if right_win is not None:
@@ -189,12 +208,14 @@ def create_pmf_cdf_plot(our_pmf, library_pmf, w1, title_suffix: str = ''):
     fig.tight_layout()
     return fig
 
-def create_epsilon_delta_plot(delta_values, eps_a, eps_r, eps_o, log_x_axis, log_y_axis, title_suffix: str = ''):
+def create_epsilon_delta_plot(delta_values, eps_a, eps_r, eps_o, log_x_axis, log_y_axis, title_suffix: str = '', eps_analytic_pmf=None):
     """Create an epsilon-vs-delta figure for analytical/ref/ours and return the figure."""
     fig = plt.figure(figsize=(10, 6))
     plt.semilogx(delta_values, eps_a, 'k-', label='Analytical')
     plt.semilogx(delta_values, eps_r, 'r--', label='Ref (Lib)')
     plt.semilogx(delta_values, eps_o, 'b-', label='Ours')
+    if eps_analytic_pmf is not None:
+        plt.semilogx(delta_values, eps_analytic_pmf, 'g-.', label='Analytic PMF')
     if log_x_axis:
         plt.xscale('log')
         plt.xlabel('Delta (log scale)')

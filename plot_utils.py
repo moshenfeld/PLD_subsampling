@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from subsample_pld_pmf import dp_accounting_pmf_to_loss_probs
 from pmf_compare import calc_W1_dist
+from analytic_derivation import subsampled_gaussian_probabilities_from_losses
 
 
 def ensure_plots_dir(path: str = "plots") -> str:
@@ -10,41 +11,78 @@ def ensure_plots_dir(path: str = "plots") -> str:
     return path
 
 
-def create_pmf_cdf_plot(our_pmf, library_pmf, w1, title_suffix: str = '', analytic_pmf=None, w1_analytic=None):
-    our_losses, our_probs = dp_accounting_pmf_to_loss_probs(our_pmf)
-    lib_losses, lib_probs = dp_accounting_pmf_to_loss_probs(library_pmf)
+def create_pmf_cdf_plot(
+    pmfs: list,
+    sigma: float,
+    sampling_prob: float,
+    title_suffix: str = '',
+    method_labels: list | None = None,
+):
+    """
+    Plot CDFs for a sequence of PLDs provided as (losses, probs) pairs.
 
-    if analytic_pmf is not None:
-        an_losses, an_probs = dp_accounting_pmf_to_loss_probs(analytic_pmf)
-        all_losses = np.unique(np.concatenate([our_losses, lib_losses, an_losses]))
-    else:
-        all_losses = np.unique(np.concatenate([our_losses, lib_losses]))
-    finite_losses = np.sort(all_losses[np.isfinite(all_losses)])
-    our_map = dict(zip(our_losses, our_probs))
-    lib_map = dict(zip(lib_losses, lib_probs))
-    if analytic_pmf is not None:
-        an_map = dict(zip(an_losses, an_probs))
-    our_grid = np.array([our_map.get(x, 0.0) for x in finite_losses])
-    lib_grid = np.array([lib_map.get(x, 0.0) for x in finite_losses])
-    if analytic_pmf is not None:
-        an_grid = np.array([an_map.get(x, 0.0) for x in finite_losses])
-    our_cdf = np.cumsum(our_grid)
-    lib_cdf = np.cumsum(lib_grid)
-    if analytic_pmf is not None:
-        an_cdf = np.cumsum(an_grid)
+    - Union the provided loss grids to form a common grid
+    - Compute ground-truth probabilities on this grid using
+      subsampled_gaussian_probabilities_from_losses
+    - Plot the ground-truth CDF and each PMF's CDF
+    - Compute W1 for each PMF relative to ground truth and show it in legend
+    """
+    # Union of all finite losses
+    losses_list = []
+    for losses, probs in pmfs:
+        losses = np.asarray(losses, dtype=np.float64)
+        finite_mask = np.isfinite(losses)
+        losses_list.append(losses[finite_mask])
+    union_losses = np.unique(np.concatenate(losses_list)) if losses_list else np.array([], dtype=np.float64)
+    union_losses = np.sort(union_losses[np.isfinite(union_losses)])
 
+    # Ground-truth probabilities on union grid
+    gt_probs = subsampled_gaussian_probabilities_from_losses(
+        sigma=sigma, sampling_prob=sampling_prob, losses=union_losses
+    )
+    gt_pair = (union_losses, gt_probs)
+
+    # Figure and main panel
     fig = plt.figure(figsize=(14, 10))
     gs = fig.add_gridspec(2, 2, height_ratios=[2, 1])
-    # main
     ax_main = fig.add_subplot(gs[0, :])
-    ax_main.plot(finite_losses, our_cdf, 'b-', label='Our CDF', alpha=0.8)
-    ax_main.plot(finite_losses, lib_cdf, 'r--', label='Library CDF', alpha=0.8)
-    if analytic_pmf is not None:
-        ax_main.plot(finite_losses, an_cdf, 'g-.', label='Analytic PMF CDF', alpha=0.8)
-    if w1_analytic is not None:
-        title = f'CDF Comparison (W1 ours={w1:.6g}, analytic={w1_analytic:.6g})'
-    else:
-        title = f'CDF Comparison (W1 ours={w1:.6g})'
+
+    # Build lines for plotting: ground-truth + each PMF
+    gt_cdf = np.cumsum(gt_probs)
+    lines = [
+        {
+            'label': 'Ground truth (analytic)',
+            'cdf': gt_cdf,
+            'color': 'k',
+            'style': '-',
+            'alpha': 0.9,
+        }
+    ]
+
+    colors = ['b', 'r', 'g', 'm', 'c', 'y']
+    for idx, (losses, probs) in enumerate(pmfs):
+        losses = np.asarray(losses, dtype=np.float64)
+        probs = np.asarray(probs, dtype=np.float64)
+        pmf_map = dict(zip(losses, probs))
+        grid_probs = np.array([pmf_map.get(x, 0.0) for x in union_losses])
+        cdf_vals = np.cumsum(grid_probs)
+        w1 = calc_W1_dist((union_losses, grid_probs), (union_losses, gt_probs))
+        color = colors[idx % len(colors)]
+        name = method_labels[idx] if (method_labels is not None and idx < len(method_labels)) else f'PMF {idx+1}'
+        lines.append({
+            'label': f'{name} (W1={w1:.3g})',
+            'cdf': cdf_vals,
+            'color': color,
+            'style': '--',
+            'alpha': 0.85,
+        })
+
+    # Plot all lines on main panel
+    for line in lines:
+        ax_main.plot(union_losses, line['cdf'], linestyle=line['style'], color=line['color'],
+                     alpha=line['alpha'], label=line['label'])
+
+    title = 'CDF Comparison vs Ground Truth'
     if title_suffix:
         title += f' — {title_suffix}'
     ax_main.set_title(title)
@@ -55,6 +93,13 @@ def create_pmf_cdf_plot(our_pmf, library_pmf, w1, title_suffix: str = '', analyt
     ax_main.set_ylim(0.0, 1.0)
 
     # Determine focus centers via largest gap in log space on each side
+    # Tail panels: compute focus windows using first PMF (if any) vs ground-truth
+    finite_losses = union_losses
+    if len(lines) > 1:
+        our_cdf = lines[1]['cdf']  # first provided PMF
+    else:
+        our_cdf = np.zeros_like(gt_cdf)
+    lib_cdf = lines[0]['cdf']  # ground truth
     avg_cdf = 0.5 * (our_cdf + lib_cdf)
     tiny = 1e-16
     if finite_losses.size:
@@ -117,10 +162,8 @@ def create_pmf_cdf_plot(our_pmf, library_pmf, w1, title_suffix: str = '', analyt
 
     # left tail centered at left_loss
     ax_left = fig.add_subplot(gs[1, 0])
-    ax_left.plot(finite_losses, our_cdf, 'b-', alpha=0.8)
-    ax_left.plot(finite_losses, lib_cdf, 'r--', alpha=0.8)
-    if analytic_pmf is not None:
-        ax_left.plot(finite_losses, an_cdf, 'g-.', alpha=0.8)
+    for line in lines:
+        ax_left.plot(finite_losses, line['cdf'], linestyle=line['style'], color=line['color'], alpha=0.8)
     ax_left.set_yscale('log')
     # Focus x-limits via adaptive log-gap band; fallback to default span
     left_win = window_from_metric(left_weighted, left_idx, left_mask) if finite_losses.size else None
@@ -151,10 +194,8 @@ def create_pmf_cdf_plot(our_pmf, library_pmf, w1, title_suffix: str = '', analyt
     # right tail centered at right_loss
     ax_right = fig.add_subplot(gs[1, 1])
     # Plot CDF (not 1-CDF)
-    ax_right.plot(finite_losses, our_cdf, 'b-', alpha=0.8)
-    ax_right.plot(finite_losses, lib_cdf, 'r--', alpha=0.8)
-    if analytic_pmf is not None:
-        ax_right.plot(finite_losses, an_cdf, 'g-.', alpha=0.8)
+    for line in lines:
+        ax_right.plot(finite_losses, line['cdf'], linestyle=line['style'], color=line['color'], alpha=0.8)
     # Focus x-limits via adaptive log-gap band; fallback to default span
     right_win = window_from_metric(right_weighted, right_idx, right_mask if 'right_mask' in locals() else (avg_cdf > 0.5)) if finite_losses.size else None
     if right_win is not None:
@@ -208,25 +249,57 @@ def create_pmf_cdf_plot(our_pmf, library_pmf, w1, title_suffix: str = '', analyt
     fig.tight_layout()
     return fig
 
-def create_epsilon_delta_plot(delta_values, eps_a, eps_r, eps_o, log_x_axis, log_y_axis, title_suffix: str = '', eps_analytic_pmf=None):
-    """Create an epsilon-vs-delta figure for analytical/ref/ours and return the figure."""
+def create_epsilon_delta_plot(delta_values, eps_a, eps_r, eps_o, log_x_axis, log_y_axis, title_suffix: str = '', eps_analytic_pmf=None, method_labels: list | None = None, use_log_y: bool | None = None):
+    """Create an epsilon ratio plot vs delta: method epsilon divided by ground truth epsilon (analytical).
+
+    method_labels, if provided, should correspond to the numerator series order:
+      [label_for_ref, label_for_ours, (optional) label_for_analytic_pmf]
+    """
     fig = plt.figure(figsize=(10, 6))
-    plt.semilogx(delta_values, eps_a, 'k-', label='Analytical')
-    plt.semilogx(delta_values, eps_r, 'r--', label='Ref (Lib)')
-    plt.semilogx(delta_values, eps_o, 'b-', label='Ours')
+    eps_a = np.asarray(eps_a, dtype=np.float64)
+    eps_r = np.asarray(eps_r, dtype=np.float64)
+    eps_o = np.asarray(eps_o, dtype=np.float64)
+    tiny = 1e-15
+    # Avoid division by zero; mark undefined ratios as NaN so they are not drawn
+    ratio_ref = np.where(eps_a > tiny, eps_r / eps_a, np.nan)
+    ratio_ours = np.where(eps_a > tiny, eps_o / eps_a, np.nan)
     if eps_analytic_pmf is not None:
-        plt.semilogx(delta_values, eps_analytic_pmf, 'g-.', label='Analytic PMF')
+        eps_analytic_pmf = np.asarray(eps_analytic_pmf, dtype=np.float64)
+        ratio_anpmf = np.where(eps_a > tiny, eps_analytic_pmf / eps_a, np.nan)
+    else:
+        ratio_anpmf = None
+
+    # X scale
     if log_x_axis:
         plt.xscale('log')
         plt.xlabel('Delta (log scale)')
     else:
         plt.xlabel('Delta')
-    if log_y_axis:
+
+    # Y scale (allow explicit override via use_log_y)
+    y_log = use_log_y if use_log_y is not None else log_y_axis
+    if y_log:
         plt.yscale('log')
-        plt.ylabel('Epsilon (log)')
-    else:
-        plt.ylabel('Epsilon')
-    title = 'Epsilon vs Delta'
+    plt.ylabel('Epsilon ratio (method / ground truth)')
+
+    # Reference line at 1
+    try:
+        yref = np.ones_like(delta_values, dtype=np.float64)
+        plt.semilogx(delta_values, yref, 'k:', alpha=0.6, label='Baseline (1.0)') if log_x_axis else plt.plot(delta_values, yref, 'k:', alpha=0.6, label='Baseline (1.0)')
+    except Exception:
+        pass
+
+    # Plot ratios
+    line_fn = plt.semilogx if log_x_axis else plt.plot
+    ref_label = (method_labels[0] if (method_labels and len(method_labels) >= 1) else 'Ref (Lib)') + ' / Analytical'
+    ours_label = (method_labels[1] if (method_labels and len(method_labels) >= 2) else 'Ours') + ' / Analytical'
+    line_fn(delta_values, ratio_ref, 'r--', label=ref_label)
+    line_fn(delta_values, ratio_ours, 'b-', label=ours_label)
+    if ratio_anpmf is not None:
+        an_label_base = method_labels[2] if (method_labels and len(method_labels) >= 3) else 'Analytic PMF'
+        line_fn(delta_values, ratio_anpmf, 'g-.', label=f'{an_label_base} / Analytical')
+
+    title = 'Epsilon ratio vs Delta (relative to analytical)'
     if title_suffix:
         title += f' — {title_suffix}'
     plt.title(title)

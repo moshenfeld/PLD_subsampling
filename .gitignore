@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+*.egg
+
+# Environments
+.env
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Tools
+.idea/
+.vscode/
+.pytest_cache/
+.coverage
+
+# Build artifacts
+build/
+dist/
+

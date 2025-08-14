@@ -8,18 +8,26 @@ from ..wrappers.dp_accounting_wrappers import (
     amplify_pld_separate_directions,
 )
 from .analytic_Gaussian import Gaussian_PLD, Gaussian_epsilon_for_delta
-from ..transforms import subsample_losses
+from ..PLD_subsampling import subsample_losses
 from .plot_utils import create_pmf_cdf_plot, create_epsilon_delta_plot
 
 
-def run_all_experiments(discretizations, q_values, sigma_values, remove_directions, delta_values):
+def run_multiple_experiments(discretizations, q_values, sigma_values, remove_directions, delta_values):
+    results = []
     for discretization in discretizations:
         for sigma in sigma_values:
             for q in q_values:
                 for remove_direction in remove_directions:
-                    dir_tag = 'rem' if remove_direction else 'add'
                     versions = run_experiment(sigma, q, discretization, delta_values, remove_direction)
-                    yield (sigma, q, discretization, dir_tag, versions)
+                    results.append({
+                        'sigma': sigma,
+                        'q': q,
+                        'discretization': discretization,
+                        'remove_direction': bool(remove_direction),
+                        'versions': versions,
+                        'delta_values': np.asarray(delta_values, dtype=float),
+                    })
+    return results
 
 
 def run_experiment(

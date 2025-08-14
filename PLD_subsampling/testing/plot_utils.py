@@ -245,6 +245,19 @@ def create_epsilon_delta_plot(delta_values, versions, eps_GT, log_x_axis: bool, 
     return fig
 
 
+def print_experiment_table(delta_values, versions, eps_GT):
+    headers = ['Delta'] + [v['name'] for v in versions] + ['GT']
+    col_fmt = "{:<8} " + "{:>15} " * (len(headers) - 1)
+    print(col_fmt.format(*headers))
+    print("-" * (10 + 16 * (len(headers) - 1)))
+    eps_arrays = [np.array(v['eps']) for v in versions] + [np.array(eps_GT)]
+    for row_vals in zip([f"{d:0.0e}" for d in delta_values], *eps_arrays):
+        delta_str = row_vals[0]
+        vals = [f"{x:15.6f}" for x in row_vals[1:]]
+        print(f"{delta_str:<8} " + " ".join(vals))
+
+
+
 __all__ = ['create_pmf_cdf_plot', 'create_epsilon_delta_plot']
 
 

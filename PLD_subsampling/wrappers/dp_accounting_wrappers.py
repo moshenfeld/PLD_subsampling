@@ -1,10 +1,11 @@
 import numpy as np
+import warnings
 from typing import Dict, Any, Union, Tuple
 
 from dp_accounting.pld import privacy_loss_distribution
 from dp_accounting.pld.pld_pmf import SparsePLDPmf, DensePLDPmf
 
-from ..PLD_subsampling import (
+from ..PLD_subsampling_impl import (
     subsample_losses,
 )
 
@@ -38,12 +39,20 @@ def create_pld_and_extract_pmf(
 def amplify_pld_separate_directions(
     base_pld: privacy_loss_distribution.PrivacyLossDistribution,
     sampling_prob: float,
-) -> Dict[str, Any]:
-    """Amplify a base PLD by subsampling, producing separate remove/add direction PMFs."""
+    return_pld: bool = False,
+) -> Union[Dict[str, Any], privacy_loss_distribution.PrivacyLossDistribution]:
+    """Amplify a base PLD by subsampling, producing separate remove/add direction PMFs.
+
+    If return_pld is True, attempts to construct and return a PrivacyLossDistribution
+    from the two amplified PMFs. If the installed dp-accounting version does not
+    support constructing a PLD from PMFs, falls back to returning the dict.
+    """
     if not (0.0 < sampling_prob <= 1.0):
         raise ValueError("sampling_prob must be in (0, 1]")
 
     if sampling_prob == 1.0:
+        if return_pld:
+            return base_pld
         return {"pmf_remove": base_pld._pmf_remove, "pmf_add": base_pld._pmf_add}
 
     base_losses, base_probs = dp_accounting_pmf_to_loss_probs(base_pld._pmf_remove)
@@ -79,7 +88,28 @@ def amplify_pld_separate_directions(
         pessimistic_estimate=pess,
     )
 
-    return {"pmf_remove": pmf_remove, "pmf_add": pmf_add}
+    if not return_pld:
+        return {"pmf_remove": pmf_remove, "pmf_add": pmf_add}
+
+    # Try to construct a PrivacyLossDistribution from the two PMFs.
+    try:
+        # Named arguments (newer versions may support this signature)
+        return privacy_loss_distribution.PrivacyLossDistribution(
+            pmf_remove=pmf_remove,
+            pmf_add=pmf_add,
+            pessimistic_estimate=pess,
+        )
+    except TypeError:
+        try:
+            # Positional fallback (older signature)
+            return privacy_loss_distribution.PrivacyLossDistribution(
+                pmf_remove, pmf_add, pess
+            )
+        except Exception as exc:
+            warnings.warn(
+                f"Failed to construct PrivacyLossDistribution from PMFs: {exc}. "
+                "Returning a dict with 'pmf_remove' and 'pmf_add' instead.")
+            return {"pmf_remove": pmf_remove, "pmf_add": pmf_add}
 
 
 def dp_accounting_pmf_to_loss_probs(pld_pmf: Union[SparsePLDPmf, DensePLDPmf, Any]) -> Tuple[np.ndarray, np.ndarray]:

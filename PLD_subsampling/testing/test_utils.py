@@ -5,11 +5,9 @@ from ..wrappers.dp_accounting_wrappers import (
     create_pld_and_extract_pmf,
     dp_accounting_pmf_to_loss_probs,
     loss_probs_to_dp_accounting_pmf,
-    amplify_pld_separate_directions,
 )
-from .analytic_Gaussian import Gaussian_PLD, Gaussian_epsilon_for_delta
-from ..core import subsample_losses
-from .plot_utils import create_pmf_cdf_plot, create_epsilon_delta_plot
+from .analytic_Gaussian import Gaussian_PLD
+from ..PLD_subsampling_impl import subsample_losses
 
 
 def run_multiple_experiments(discretizations, q_values, sigma_values, remove_directions, delta_values):

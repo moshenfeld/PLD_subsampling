@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "PLD-subsampling"
-version = "0.1.0"
+version = "0.1.1"
 description = "Subsampling transformations and utilities for Privacy Loss Distribution (PLD) PMFs"
 readme = {file = "README.md", content-type = "text/markdown"}
 requires-python = ">=3.9"
 license = {text = "Apache-2.0"}
-authors = [{ name = "Your Name" }]
+authors = [{ name = "Moshe Shenfeld" }]
 keywords = ["differential-privacy", "privacy-loss-distribution", "subsampling", "dp", "pld"]
 dependencies = [
   "numpy>=1.24",

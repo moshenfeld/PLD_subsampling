@@ -2,7 +2,7 @@ import numpy as np
 from scipy import stats
 from typing import Tuple
 
-from ..transforms import stable_subsampling_loss
+from ..PLD_subsampling import stable_subsampling_loss
 
 
 def Gaussian_PLD(

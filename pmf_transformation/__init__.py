@@ -1,4 +1,4 @@
-from .wrappers import (
+from .wrappers.dp_accounting_wrappers import (
     create_pld_and_extract_pmf,
     amplify_pld_separate_directions,
     dp_accounting_pmf_to_loss_probs,

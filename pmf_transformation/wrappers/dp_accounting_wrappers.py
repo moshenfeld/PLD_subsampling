@@ -4,7 +4,7 @@ from typing import Dict, Any, Union, Tuple
 from dp_accounting.pld import privacy_loss_distribution
 from dp_accounting.pld.pld_pmf import SparsePLDPmf, DensePLDPmf
 
-from ..transforms import (
+from ..PLD_subsampling import (
     subsample_losses,
 )
 

@@ -4,7 +4,7 @@ from .wrappers.dp_accounting_wrappers import (
     dp_accounting_pmf_to_loss_probs,
     loss_probs_to_dp_accounting_pmf,
 )
-from .PLD_subsampling import (
+from .core import (
     subsample_losses,
     exclusive_ccdf_from_pdf,
     stable_subsampling_loss,

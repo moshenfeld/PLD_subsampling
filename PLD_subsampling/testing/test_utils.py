@@ -8,7 +8,7 @@ from ..wrappers.dp_accounting_wrappers import (
     amplify_pld_separate_directions,
 )
 from .analytic_Gaussian import Gaussian_PLD, Gaussian_epsilon_for_delta
-from ..PLD_subsampling import subsample_losses
+from ..core import subsample_losses
 from .plot_utils import create_pmf_cdf_plot, create_epsilon_delta_plot
 
 

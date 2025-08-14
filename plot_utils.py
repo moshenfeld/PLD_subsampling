@@ -1,7 +1,7 @@
 import numpy as np
+import sys
 import matplotlib.pyplot as plt
 from typing import List
-from analytic_derivation import analytic_subsampled_epsilon_for_delta
 
 
 def create_pmf_cdf_plot(
@@ -64,7 +64,7 @@ def create_pmf_cdf_plot(
     ax_main.set_ylabel('CDF')
     ax_main.grid(True, alpha=0.3)
     ax_main.legend()
-    ax_main.set_ylim(0.0, 1.0)
+    ax_main.set_ylim(-0.02, 1.02)
 
     # Determine focus centers via largest spread in log space across ALL lines
     finite_losses = union_losses
@@ -73,28 +73,61 @@ def create_pmf_cdf_plot(
         # Stack CDFs: shape (k, n)
         cdfs = np.vstack([ln['cdf'] for ln in lines]) if len(lines) > 1 else np.vstack([lines[0]['cdf'], lines[0]['cdf']])
         mean_cdf = np.mean(cdfs, axis=0)
+        # After computing mean CDF, restrict the MAIN x-axis to the transition region
+        if union_losses.size > 1:
+            min_loss = float(union_losses[0])
+            max_loss = float(union_losses[-1])
+            step_main = float(union_losses[1] - union_losses[0])
+            # Prefer to focus where CDF is between ~0 and ~1
+            trans_mask = (mean_cdf >= 1e-6) & (mean_cdf <= 1.0 - 1e-6)
+            if np.any(trans_mask):
+                idxs = np.where(trans_mask)[0]
+                left_base = int(idxs[0])
+                right_base = int(idxs[-1])
+            else:
+                # Fallback: use gradient where it meaningfully changes
+                grad = np.abs(np.diff(mean_cdf))
+                if grad.size and np.max(grad) > 0:
+                    mask = grad >= (1e-3 * np.max(grad))
+                    idxs = np.where(mask)[0]
+                    left_base = int(idxs[0])
+                    right_base = int(idxs[-1] + 1)
+                else:
+                    left_base = 0
+                    right_base = union_losses.size - 1
+            # Add a reasonable buffer in x-units
+            n = union_losses.size
+            left_base = max(0, left_base)
+            right_base = min(n - 1, right_base)
+            base_span = max(1e-12, float(union_losses[right_base] - union_losses[left_base]))
+            buffer = max(0.05 * base_span, 5.0 * step_main)
+            x_left = max(min_loss, float(union_losses[left_base]) - buffer)
+            x_right = min(max_loss, float(union_losses[right_base]) + buffer)
+            if x_right > x_left:
+                ax_main.set_xlim(x_left, x_right)
         # Left side: where mean CDF <= 0.5, maximize range of log CDFs
         log_cdfs = np.log(np.maximum(cdfs, tiny))
         left_mask = mean_cdf <= 0.5
         left_range = np.max(log_cdfs, axis=0) - np.min(log_cdfs, axis=0)
         left_weighted = np.where(left_mask, left_range, -np.inf)
-        # Right side: focus near 1 using log(1-CDF)
-        thresholds = [0.999, 0.99, 0.95, 0.9, 0.5]
-        right_weighted = np.full_like(left_weighted, -np.inf)
-        log_one_minus = np.log(np.maximum(1.0 - cdfs, tiny))
-        right_range = np.max(log_one_minus, axis=0) - np.min(log_one_minus, axis=0)
-        right_mask = mean_cdf > 0.5
-        # Prefer very high CDF regions if available
-        for thr in thresholds:
-            mask_thr = mean_cdf >= thr
-            if np.any(mask_thr):
-                cand = np.where(mask_thr, right_range, -np.inf)
-                if np.isfinite(np.max(cand)) and np.max(cand) >= 0:
-                    right_weighted = cand
-                    right_mask = mask_thr
-                    break
-        if not np.isfinite(np.max(right_weighted)):
-            right_weighted = np.where(right_mask, right_range, -np.inf)
+
+        # Right side: focus near 1 in a numerically stable way using relative CCDF spread
+        ccdfs = np.maximum(1.0 - cdfs, tiny)
+        mean_ccdf = np.mean(ccdfs, axis=0)
+        log_ccdf = np.log(ccdfs)
+        # Relative spread = log(max/min) across versions at each x
+        right_metric = np.max(log_ccdf, axis=0) - np.min(log_ccdf, axis=0)
+        # Select extreme-right candidates where mean CCDF is tiny
+        tail_thresholds = [1e-12, 1e-10, 1e-8, 1e-6, 1e-4, 1e-3, 1e-2]
+        right_mask = np.zeros_like(mean_ccdf, dtype=bool)
+        for thr in tail_thresholds:
+            cand_mask = mean_ccdf <= thr
+            if np.any(cand_mask):
+                right_mask = cand_mask
+                break
+        if not np.any(right_mask):
+            right_mask = mean_cdf > 0.5
+        right_weighted = np.where(right_mask, right_metric, -np.inf)
         # Fallbacks if side is empty
         left_idx = int(np.nanargmax(left_weighted)) if np.any(left_mask) else 0
         right_idx = int(np.nanargmax(right_weighted)) if np.any(right_mask) else (len(finite_losses) - 1)
@@ -166,10 +199,14 @@ def create_pmf_cdf_plot(
     # Plot CDF (not 1-CDF)
     for line in lines:
         ax_right.plot(finite_losses, line['cdf'], linestyle=line['style'], color=line['color'], alpha=0.8)
-    # Focus x-limits via adaptive log-gap band; fallback to default span
-    right_win = window_from_metric(right_weighted, right_idx, right_mask if 'right_mask' in locals() else (avg_cdf > 0.5)) if finite_losses.size else None
-    if right_win is not None:
-        right_min, right_max = right_win
+    # Focus x-limits around the point of maximum relative CCDF gap
+    if finite_losses.size and np.any(np.isfinite(right_weighted)):
+        n = finite_losses.size
+        pad_bins = max(5, min(100, n // 50))
+        l_idx = max(0, right_idx - pad_bins)
+        r_idx = min(n - 1, right_idx + pad_bins)
+        right_min = float(finite_losses[l_idx])
+        right_max = float(finite_losses[r_idx])
     else:
         right_min = right_loss - default_span
         right_max = right_loss + default_span
@@ -199,7 +236,7 @@ def create_pmf_cdf_plot(
     def inverse_log1mcdf_to_cdf(z):
         return 1.0 - np.power(10.0, -z)
     ax_right.set_yscale('function', functions=(forward_cdf_to_log1mcdf, inverse_log1mcdf_to_cdf))
-    ax_right.set_title('Right extreme (CDF; scale: log10(1−CDF))')
+    ax_right.set_title('Right extreme (CDF; scale: log(1−CDF))')
     ax_right.set_xlabel('Privacy Loss')
     ax_right.set_ylabel('CDF')
     # Configure y-ticks at CDF = 1 - 10^{-k}
@@ -216,25 +253,25 @@ def create_pmf_cdf_plot(
     ax_right.grid(True, which='both', alpha=0.3)
 
     fig.tight_layout()
+    try:
+        xl = ax_main.get_xlim()
+        sys.stdout.flush()
+    except Exception:
+        pass
     return fig
 
-def create_epsilon_delta_plot(delta_values, versions, sigma: float, q: float, log_x_axis: bool, log_y_axis: bool, title_suffix: str = ''):
+def create_epsilon_delta_plot(delta_values, versions, eps_GT, log_x_axis: bool, log_y_axis: bool, title_suffix: str):
     """Plot epsilon ratios vs delta for each version relative to analytical ground-truth.
-
     Inputs:
     - delta_values: list/array of deltas
     - versions: list of dicts with fields: {'name': str, 'eps': List[float]}
     - title_suffix/log flags same as before
-    Ground-truth is computed via analytic_subsampled_epsilon_for_delta using sigma,q parsed from title_suffix.
+    Ground-truth is computed via analytic_subsampled_epsilon_for_delta using sigma and q.
     """
     fig = plt.figure(figsize=(10, 6))
 
     delta_values = np.asarray(delta_values, dtype=np.float64)
-    # Analytical ground-truth eps via closed form
-    eps_GT = np.array([
-        analytic_subsampled_epsilon_for_delta(sigma=sigma, q=q, delta=float(d), sensitivity=1.0)
-        for d in delta_values
-    ], dtype=np.float64)
+    eps_GT = np.asarray(eps_GT, dtype=np.float64)
 
     tiny = 1e-15
     colors = ['r', 'b', 'g', 'm']
@@ -259,7 +296,7 @@ def create_epsilon_delta_plot(delta_values, versions, sigma: float, q: float, lo
         ratio_v = eps_v[valid_mask] / eps_GT[valid_mask]
         style = ['--', '-', '-.'][idx % 3]
         color = colors[idx % len(colors)]
-        line_fn(eps_GT, ratio_v, linestyle=style, color=color, label=f'{name} / Analytical')
+        line_fn(eps_GT[valid_mask], ratio_v, linestyle=style, color=color, label=f'{name} / Analytical')
 
     title = 'Epsilon ratio (relative to analytical) vs. analytical epsilon'
     if title_suffix:

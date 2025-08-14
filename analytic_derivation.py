@@ -1,82 +1,118 @@
 import numpy as np
+from scipy import stats
 from typing import Tuple
-from scipy.stats import norm
 
+from subsample_pld_pmf import stable_subsampling_loss
 
 def subsampled_gaussian_probabilities_from_losses(
     sigma: float,
     sampling_prob: float,
-    losses: np.ndarray,
-) -> np.ndarray:
-    """
-    Compute discrete probabilities over the provided loss grid for the
-    subsampled Gaussian mechanism via an analytic CDF formula.
-
-    For each loss value l, define the CDF:
-        P(l) = [ q * exp(l) / (q + exp(l) - 1) ] * Phi( ( ln(1 + (exp((l - 0.5)/sigma^2) - 1)/q) - 1 ) / sigma )
-
-    We then return the PMF on this grid using the forward differences:
-        p[i] = P(losses[i]) - P(losses[i-1]), with P(losses[-1]) := 0.
-
-    Args:
-        sigma: Standard deviation of the Gaussian noise.
-        sampling_prob: Subsampling probability q in (0, 1].
-        losses: Sorted array of loss values (ascending) defining the grid.
-
-    Returns:
-        probs: Array of probabilities aligned with `losses`.
-
-    Raises:
-        ValueError: If inputs are outside expected domains or losses are not sorted.
-    """
+    discretization: float,
+    remove_direction: bool = True,
+) -> Tuple[np.ndarray, np.ndarray]:
     if sigma <= 0:
         raise ValueError("sigma must be positive")
     if not (0 < sampling_prob <= 1):
         raise ValueError("sampling_prob (q) must be in (0, 1]")
-    if losses.ndim != 1:
-        raise ValueError("losses must be a 1D array")
-    if not np.all(np.diff(losses) >= 0):
-        raise ValueError("losses must be sorted in ascending order")
+    
+    sigma_rounded = np.round(sigma / discretization) * discretization
+    # Use symmetric range based on 50/sigma as requested
+    l_bound = 50.0 / sigma
+    l_max = np.ceil(l_bound / discretization) * discretization
+    losses = np.arange(-l_max, l_max + discretization, discretization)
 
-    q = float(sampling_prob)
-    l = losses.astype(np.float64)
+    # Only losses for which l > ln(1-sampling_prob) might have non-zero probability
+    valid = losses > np.log(1 - sampling_prob) if sampling_prob < 1.0 else np.ones_like(losses, dtype=bool)
+    transformed_losses = stable_subsampling_loss(losses[valid], sampling_prob, remove_direction)
+   
+    # mapping of loss to normalized Gaussian value:
+    #   for the upper distribution: sigma * l - 0.5/sigma
+    #   for the lower distribution: sigma * l + 0.5/sigma
+    x_upper = sigma * transformed_losses - 0.5/sigma
+    x_lower = sigma * transformed_losses + 0.5/sigma
+    
+    # P_upper = stats.norm.cdf(x_upper)
+    # p_upper = P_upper - np.concatenate(([0.0], P_upper[:-1]))
+    # P_lower = stats.norm.cdf(x_lower)
+    # p_lower = P_lower - np.concatenate(([0.0], P_lower[:-1]))
+    # p_upper_from_lower = np.exp(np.log(p_lower) + transformed_losses)
+    # p_lower_from_upper = np.exp(np.log(p_upper) - transformed_losses)
+    # P_upper_from_lower = np.cumsum(p_upper_from_lower)
+    # P_lower_from_upper = np.cumsum(p_lower_from_upper)
+    # print(f'sum(p_upper) = {np.sum(p_upper)}, sum(p_lower) = {np.sum(p_lower)}, sum(p_upper_from_lower) = {np.sum(p_upper_from_lower)}, sum(p_lower_from_upper) = {np.sum(p_lower_from_upper)}')
 
-    # Prefactor: q * e^l / (q + e^l - 1)
-    exp_l = np.exp(l)
-    denom = q + exp_l - 1.0
-    # Guard against division by zero; if denom == 0, set prefactor to 0.
-    with np.errstate(divide='ignore', invalid='ignore'):
-        prefactor = np.where(denom != 0.0, q * exp_l / denom, 0.0)
 
-    # Inner Phi argument: ( ln(1 + (exp((l - 0.5)/sigma^2) - 1)/q) - 1 ) / sigma
-    exp_term = np.exp((l - 0.5) / (sigma * sigma))
-    # For very small exp_term, (exp_term - 1)/q < -1 and log1p is undefined.
-    # In that region we set the CDF contribution to 0.
-    arg = (exp_term - 1.0) / q
-    valid = arg > -1.0
-    inner_log = np.zeros_like(exp_term)
-    inner_log[valid] = np.log1p(arg[valid])
-    z = (inner_log - 1.0) / sigma
-    # For invalid region, set z to -inf so Phi(z)=0
-    z[~valid] = -np.inf
-    cdf_vals = norm.cdf(z)
-
-    # CDF on the grid
-    P = prefactor * cdf_vals
-
-    # Ensure CDF is non-decreasing and bounded in [0, 1]
-    P = np.clip(P, 0.0, 1.0)
-    P = np.maximum.accumulate(P)
+    # CDF of the loss
+    P = np.zeros_like(losses)
+    if remove_direction:
+        P[valid] = stats.norm.cdf(x_lower) + sampling_prob * (stats.norm.cdf(x_upper) - stats.norm.cdf(x_lower))
+    else:
+        P[valid] = stats.norm.cdf(x_upper)
 
     # PMF by forward differences with P[-1] = 0
-    P_prev = np.concatenate(([0.0], P[:-1]))
-    probs = P - P_prev
+    probs = P - np.concatenate(([0.0], P[:-1]))
 
-    # Clip small negatives from numerical issues and renormalize to sum <= 1
-    probs = np.maximum(probs, 0.0)
-    total = float(np.sum(probs, dtype=np.float64))
-    if total > 1.0:
-        probs = probs / total
-    return probs
+    # Check if any numerical issue arised such as P>1, p < 0, or sum(p) > 1
+    if np.any(P > 1):
+        raise ValueError("P > 1 in subsampled_gaussian_probabilities_from_losses")
+    if np.any(probs < 0):
+        raise ValueError("P < 0 in subsampled_gaussian_probabilities_from_losses")
+    if np.sum(probs) > 1:
+        raise ValueError("sum(P) > 1 in subsampled_gaussian_probabilities_from_losses")
+    if np.size(probs) != np.size(losses):
+        raise ValueError("Length mismatch between losses and probs")
+    return losses, probs
 
+def compute_delta(epsilon: float, noise_multiplier: float) -> float:
+    """
+    Compute exact delta for the Gaussian mechanism given epsilon and noise multiplier.
+    
+    This implementation matches the dp-accounting library's implementation.
+    
+    Args:
+        epsilon: The privacy parameter epsilon
+        noise_multiplier: The noise multiplier (sigma/sensitivity)
+        
+    Returns:
+        The corresponding delta value
+    """
+    # The standard deviation is noise_multiplier * sensitivity, but we've already
+    # incorporated sensitivity into noise_multiplier
+    if noise_multiplier == 0:
+        return 0 if epsilon == float('inf') else 1
+    
+    # The exact formula for delta
+    return stats.norm.cdf(0.5/noise_multiplier - epsilon*noise_multiplier) - \
+           np.exp(epsilon) * stats.norm.cdf(-0.5/noise_multiplier - epsilon*noise_multiplier)
 
+def gaussian_epsilon_for_delta(sigma: float, sensitivity: float, delta: float) -> float:
+    """Compute epsilon for the Gaussian mechanism given delta via binary search."""
+    noise_multiplier = sigma / sensitivity
+    def delta_for_eps(eps: float) -> float:
+        return compute_delta(eps, noise_multiplier)
+    eps_low = 0.0
+    eps_high = 100.0
+    if delta_for_eps(eps_high) > delta:
+        return float('inf')
+    while eps_high - eps_low > 1e-6:
+        eps_mid = (eps_low + eps_high) / 2.0
+        if delta_for_eps(eps_mid) <= delta:
+            eps_high = eps_mid
+        else:
+            eps_low = eps_mid
+    return eps_high
+
+def analytic_subsampled_epsilon_for_delta(
+    sigma: float,
+    q: float,
+    delta: float,
+    sensitivity: float = 1.0,
+) -> float:
+    """Analytical ε(δ) for subsampled Gaussian: ε' = log(1 + q (exp(ε_orig(δ/q)) - 1))."""
+    if q <= 0.0 or q > 1.0:
+        raise ValueError("Sampling probability must be in (0, 1]")
+    if q == 1.0:
+        return gaussian_epsilon_for_delta(sigma=sigma, sensitivity=sensitivity, delta=delta)
+    adjusted_delta = min(delta / q, 1.0)
+    eps_orig = gaussian_epsilon_for_delta(sigma=sigma, sensitivity=sensitivity, delta=adjusted_delta)
+    return float(np.log(1.0 + q * (np.exp(eps_orig) - 1.0)))

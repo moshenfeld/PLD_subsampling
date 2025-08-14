@@ -1,22 +1,12 @@
-import os
 import numpy as np
 import matplotlib.pyplot as plt
-from subsample_pld_pmf import dp_accounting_pmf_to_loss_probs
-from pmf_compare import calc_W1_dist
-from analytic_derivation import subsampled_gaussian_probabilities_from_losses
-
-
-def ensure_plots_dir(path: str = "plots") -> str:
-    os.makedirs(path, exist_ok=True)
-    return path
+from typing import List
+from analytic_derivation import analytic_subsampled_epsilon_for_delta
 
 
 def create_pmf_cdf_plot(
-    pmfs: list,
-    sigma: float,
-    sampling_prob: float,
+    versions: List[dict],
     title_suffix: str = '',
-    method_labels: list | None = None,
 ):
     """
     Plot CDFs for a sequence of PLDs provided as (losses, probs) pairs.
@@ -27,50 +17,34 @@ def create_pmf_cdf_plot(
     - Plot the ground-truth CDF and each PMF's CDF
     - Compute W1 for each PMF relative to ground truth and show it in legend
     """
-    # Union of all finite losses
+    # Union of all finite losses across versions and ground truth
     losses_list = []
-    for losses, probs in pmfs:
-        losses = np.asarray(losses, dtype=np.float64)
+    for entry in versions:
+        losses = np.asarray(entry['losses'], dtype=np.float64)
         finite_mask = np.isfinite(losses)
         losses_list.append(losses[finite_mask])
     union_losses = np.unique(np.concatenate(losses_list)) if losses_list else np.array([], dtype=np.float64)
     union_losses = np.sort(union_losses[np.isfinite(union_losses)])
-
-    # Ground-truth probabilities on union grid
-    gt_probs = subsampled_gaussian_probabilities_from_losses(
-        sigma=sigma, sampling_prob=sampling_prob, losses=union_losses
-    )
-    gt_pair = (union_losses, gt_probs)
 
     # Figure and main panel
     fig = plt.figure(figsize=(14, 10))
     gs = fig.add_gridspec(2, 2, height_ratios=[2, 1])
     ax_main = fig.add_subplot(gs[0, :])
 
-    # Build lines for plotting: ground-truth + each PMF
-    gt_cdf = np.cumsum(gt_probs)
-    lines = [
-        {
-            'label': 'Ground truth (analytic)',
-            'cdf': gt_cdf,
-            'color': 'k',
-            'style': '-',
-            'alpha': 0.9,
-        }
-    ]
+    # Build lines for plotting: treat all PMFs equally
+    lines = []
 
-    colors = ['b', 'r', 'g', 'm', 'c', 'y']
-    for idx, (losses, probs) in enumerate(pmfs):
-        losses = np.asarray(losses, dtype=np.float64)
-        probs = np.asarray(probs, dtype=np.float64)
+    colors = ['r', 'b', 'g', 'm']
+    for idx, entry in enumerate(versions):
+        name = entry.get('name', f'PMF {idx+1}')
+        losses = np.asarray(entry['losses'], dtype=np.float64)
+        probs = np.asarray(entry['probs'], dtype=np.float64)
         pmf_map = dict(zip(losses, probs))
         grid_probs = np.array([pmf_map.get(x, 0.0) for x in union_losses])
         cdf_vals = np.cumsum(grid_probs)
-        w1 = calc_W1_dist((union_losses, grid_probs), (union_losses, gt_probs))
         color = colors[idx % len(colors)]
-        name = method_labels[idx] if (method_labels is not None and idx < len(method_labels)) else f'PMF {idx+1}'
         lines.append({
-            'label': f'{name} (W1={w1:.3g})',
+            'label': f'{name} (W1={entry.get("W1_vs_GT", "N/A"):.2e})' if "W1_vs_GT" in entry.keys() else name,
             'cdf': cdf_vals,
             'color': color,
             'style': '--',
@@ -82,7 +56,7 @@ def create_pmf_cdf_plot(
         ax_main.plot(union_losses, line['cdf'], linestyle=line['style'], color=line['color'],
                      alpha=line['alpha'], label=line['label'])
 
-    title = 'CDF Comparison vs Ground Truth'
+    title = 'CDF Comparison'
     if title_suffix:
         title += f' — {title_suffix}'
     ax_main.set_title(title)
@@ -92,40 +66,35 @@ def create_pmf_cdf_plot(
     ax_main.legend()
     ax_main.set_ylim(0.0, 1.0)
 
-    # Determine focus centers via largest gap in log space on each side
-    # Tail panels: compute focus windows using first PMF (if any) vs ground-truth
+    # Determine focus centers via largest spread in log space across ALL lines
     finite_losses = union_losses
-    if len(lines) > 1:
-        our_cdf = lines[1]['cdf']  # first provided PMF
-    else:
-        our_cdf = np.zeros_like(gt_cdf)
-    lib_cdf = lines[0]['cdf']  # ground truth
-    avg_cdf = 0.5 * (our_cdf + lib_cdf)
     tiny = 1e-16
-    if finite_losses.size:
-        # Left: maximize |log(CDF_our) - log(CDF_lib)| for avg CDF <= 0.5
-        left_mask = avg_cdf <= 0.5
-        log_cdf_our = np.log(np.maximum(our_cdf, tiny))
-        log_cdf_lib = np.log(np.maximum(lib_cdf, tiny))
-        left_metric = np.abs(log_cdf_our - log_cdf_lib)
-        left_weighted = np.where(left_mask, left_metric, -np.inf)
-
-        # Right: maximize |log(1-CDF_our) - log(1-CDF_lib)| near the edge (avg CDF high)
+    if finite_losses.size and len(lines) >= 1:
+        # Stack CDFs: shape (k, n)
+        cdfs = np.vstack([ln['cdf'] for ln in lines]) if len(lines) > 1 else np.vstack([lines[0]['cdf'], lines[0]['cdf']])
+        mean_cdf = np.mean(cdfs, axis=0)
+        # Left side: where mean CDF <= 0.5, maximize range of log CDFs
+        log_cdfs = np.log(np.maximum(cdfs, tiny))
+        left_mask = mean_cdf <= 0.5
+        left_range = np.max(log_cdfs, axis=0) - np.min(log_cdfs, axis=0)
+        left_weighted = np.where(left_mask, left_range, -np.inf)
+        # Right side: focus near 1 using log(1-CDF)
         thresholds = [0.999, 0.99, 0.95, 0.9, 0.5]
         right_weighted = np.full_like(left_weighted, -np.inf)
-        log_tail_our = np.log(np.maximum(1.0 - our_cdf, tiny))
-        log_tail_lib = np.log(np.maximum(1.0 - lib_cdf, tiny))
-        right_metric = np.abs(log_tail_our - log_tail_lib)
+        log_one_minus = np.log(np.maximum(1.0 - cdfs, tiny))
+        right_range = np.max(log_one_minus, axis=0) - np.min(log_one_minus, axis=0)
+        right_mask = mean_cdf > 0.5
+        # Prefer very high CDF regions if available
         for thr in thresholds:
-            right_mask = avg_cdf >= thr
-            if np.any(right_mask):
-                cand = np.where(right_mask, right_metric, -np.inf)
+            mask_thr = mean_cdf >= thr
+            if np.any(mask_thr):
+                cand = np.where(mask_thr, right_range, -np.inf)
                 if np.isfinite(np.max(cand)) and np.max(cand) >= 0:
                     right_weighted = cand
+                    right_mask = mask_thr
                     break
         if not np.isfinite(np.max(right_weighted)):
-            right_mask = avg_cdf > 0.5
-            right_weighted = np.where(right_mask, right_metric, -np.inf)
+            right_weighted = np.where(right_mask, right_range, -np.inf)
         # Fallbacks if side is empty
         left_idx = int(np.nanargmax(left_weighted)) if np.any(left_mask) else 0
         right_idx = int(np.nanargmax(right_weighted)) if np.any(right_mask) else (len(finite_losses) - 1)
@@ -178,13 +147,14 @@ def create_pmf_cdf_plot(
     left_max = left_loss + 0.8 * left_width
     if finite_losses.size:
         ax_left.set_xlim(max(float(finite_losses.min()), left_min), min(float(finite_losses.max()), left_max))
-        # Concentrate Y-range to the relevant CDF values within the left window
+        # Concentrate Y-range to the relevant CDF values within the left window across all lines
         mask_left = (finite_losses >= ax_left.get_xlim()[0]) & (finite_losses <= ax_left.get_xlim()[1])
         if np.any(mask_left):
-            y_left_vals = np.concatenate([our_cdf[mask_left], lib_cdf[mask_left]])
-            y_min = float(np.max([np.min(y_left_vals[y_left_vals > 0.0]) if np.any(y_left_vals > 0.0) else 1e-16, 1e-16]))
-            y_max = float(np.max(y_left_vals))
-            # Pad by a small factor on log scale
+            stacked = np.vstack([ln['cdf'][mask_left] for ln in lines]) if lines else np.zeros((1, np.sum(mask_left)))
+            y_left_vals = stacked.flatten()
+            pos = y_left_vals[y_left_vals > 0.0]
+            y_min = float(np.max([np.min(pos) if pos.size else 1e-16, 1e-16]))
+            y_max = float(np.max(y_left_vals)) if y_left_vals.size else 1.0
             ax_left.set_ylim(max(y_min * 0.8, 1e-16), min(y_max * 1.25, 1.0))
     ax_left.set_title('Left extreme (log CDF)')
     ax_left.set_xlabel('Privacy Loss')
@@ -209,16 +179,15 @@ def create_pmf_cdf_plot(
     right_max = right_loss + 0.2 * right_width
     if finite_losses.size:
         ax_right.set_xlim(max(float(finite_losses.min()), right_min), min(float(finite_losses.max()), right_max))
-        # Concentrate Y-range: choose bounds based on 1-CDF within the window, but display CDF
+        # Concentrate Y-range: choose bounds based on 1-CDF within the window, aggregated over all lines
         mask_right = (finite_losses >= ax_right.get_xlim()[0]) & (finite_losses <= ax_right.get_xlim()[1])
-        if np.any(mask_right):
-            cdf_vals = np.concatenate([our_cdf[mask_right], lib_cdf[mask_right]])
-            one_minus = 1.0 - cdf_vals
-            # define y-lims on CDF so that one_minus ranges are in view
-            if np.any(one_minus > 0):
-                min_one = float(np.max([np.min(one_minus[one_minus > 0.0]), 1e-16]))
-                max_one = float(np.max(one_minus))
-                # Map to CDF band [1 - 1.25*max_one, 1 - 0.8*min_one]
+        if np.any(mask_right) and lines:
+            stacked = np.vstack([ln['cdf'][mask_right] for ln in lines])
+            one_minus = 1.0 - stacked
+            pos = one_minus[one_minus > 0.0]
+            if pos.size:
+                min_one = float(np.max([np.min(pos), 1e-16]))
+                max_one = float(np.max(pos))
                 y_low = max(0.0, 1.0 - 1.25 * max_one)
                 y_high = min(1.0, 1.0 - 0.8 * min_one)
                 if y_high > y_low:
@@ -249,57 +218,50 @@ def create_pmf_cdf_plot(
     fig.tight_layout()
     return fig
 
-def create_epsilon_delta_plot(delta_values, eps_a, eps_r, eps_o, log_x_axis, log_y_axis, title_suffix: str = '', eps_analytic_pmf=None, method_labels: list | None = None, use_log_y: bool | None = None):
-    """Create an epsilon ratio plot vs delta: method epsilon divided by ground truth epsilon (analytical).
+def create_epsilon_delta_plot(delta_values, versions, sigma: float, q: float, log_x_axis: bool, log_y_axis: bool, title_suffix: str = ''):
+    """Plot epsilon ratios vs delta for each version relative to analytical ground-truth.
 
-    method_labels, if provided, should correspond to the numerator series order:
-      [label_for_ref, label_for_ours, (optional) label_for_analytic_pmf]
+    Inputs:
+    - delta_values: list/array of deltas
+    - versions: list of dicts with fields: {'name': str, 'eps': List[float]}
+    - title_suffix/log flags same as before
+    Ground-truth is computed via analytic_subsampled_epsilon_for_delta using sigma,q parsed from title_suffix.
     """
     fig = plt.figure(figsize=(10, 6))
-    eps_a = np.asarray(eps_a, dtype=np.float64)
-    eps_r = np.asarray(eps_r, dtype=np.float64)
-    eps_o = np.asarray(eps_o, dtype=np.float64)
+
+    delta_values = np.asarray(delta_values, dtype=np.float64)
+    # Analytical ground-truth eps via closed form
+    eps_GT = np.array([
+        analytic_subsampled_epsilon_for_delta(sigma=sigma, q=q, delta=float(d), sensitivity=1.0)
+        for d in delta_values
+    ], dtype=np.float64)
+
     tiny = 1e-15
-    # Avoid division by zero; mark undefined ratios as NaN so they are not drawn
-    ratio_ref = np.where(eps_a > tiny, eps_r / eps_a, np.nan)
-    ratio_ours = np.where(eps_a > tiny, eps_o / eps_a, np.nan)
-    if eps_analytic_pmf is not None:
-        eps_analytic_pmf = np.asarray(eps_analytic_pmf, dtype=np.float64)
-        ratio_anpmf = np.where(eps_a > tiny, eps_analytic_pmf / eps_a, np.nan)
-    else:
-        ratio_anpmf = None
+    colors = ['r', 'b', 'g', 'm']
+    line_fn = plt.semilogx if log_x_axis else plt.plot
 
     # X scale
     if log_x_axis:
         plt.xscale('log')
-        plt.xlabel('Delta (log scale)')
+        plt.xlabel('Epsilon (log scale)')
     else:
-        plt.xlabel('Delta')
+        plt.xlabel('Epsilon')
 
-    # Y scale (allow explicit override via use_log_y)
-    y_log = use_log_y if use_log_y is not None else log_y_axis
-    if y_log:
+    # Y scale
+    if log_y_axis:
         plt.yscale('log')
     plt.ylabel('Epsilon ratio (method / ground truth)')
-
-    # Reference line at 1
-    try:
-        yref = np.ones_like(delta_values, dtype=np.float64)
-        plt.semilogx(delta_values, yref, 'k:', alpha=0.6, label='Baseline (1.0)') if log_x_axis else plt.plot(delta_values, yref, 'k:', alpha=0.6, label='Baseline (1.0)')
-    except Exception:
-        pass
-
     # Plot ratios
-    line_fn = plt.semilogx if log_x_axis else plt.plot
-    ref_label = (method_labels[0] if (method_labels and len(method_labels) >= 1) else 'Ref (Lib)') + ' / Analytical'
-    ours_label = (method_labels[1] if (method_labels and len(method_labels) >= 2) else 'Ours') + ' / Analytical'
-    line_fn(delta_values, ratio_ref, 'r--', label=ref_label)
-    line_fn(delta_values, ratio_ours, 'b-', label=ours_label)
-    if ratio_anpmf is not None:
-        an_label_base = method_labels[2] if (method_labels and len(method_labels) >= 3) else 'Analytic PMF'
-        line_fn(delta_values, ratio_anpmf, 'g-.', label=f'{an_label_base} / Analytical')
+    valid_mask = eps_GT > tiny
+    for idx, entry in enumerate(versions):
+        name = entry.get('name', f'PMF {idx+1}')
+        eps_v = np.asarray(entry.get('eps', []), dtype=np.float64)
+        ratio_v = eps_v[valid_mask] / eps_GT[valid_mask]
+        style = ['--', '-', '-.'][idx % 3]
+        color = colors[idx % len(colors)]
+        line_fn(eps_GT, ratio_v, linestyle=style, color=color, label=f'{name} / Analytical')
 
-    title = 'Epsilon ratio vs Delta (relative to analytical)'
+    title = 'Epsilon ratio (relative to analytical) vs. analytical epsilon'
     if title_suffix:
         title += f' — {title_suffix}'
     plt.title(title)

@@ -1,162 +1,74 @@
-import numpy as np
-from typing import Dict, List, Tuple, Any
-from scipy import stats
+from typing import Dict, List, Any
 
 from dp_accounting.pld import privacy_loss_distribution
 
-from pmf_utils import create_test_pmfs
+from pmf_utils import create_pld_and_extract_pmf
 from pmf_compare import calc_W1_dist
 from analytic_derivation import subsampled_gaussian_probabilities_from_losses
-from subsample_pld_pmf import dp_accounting_pmf_to_loss_probs
+from subsample_pld_pmf import dp_accounting_pmf_to_loss_probs, loss_probs_to_dp_accounting_pmf, subsample_losses
 
- 
 
 def run_experiment(
     sigma: float,
     sampling_prob: float,
     discretization: float,
     delta_values: List[float],
+    remove_direction: bool = True,
 ) -> Dict[str, Any]:
-    """
-    Build library reference PMF and our transformed PMF and return:
-    - w1_distance between our PMF and the library PMF
-    - epsilon arrays for analytical, reference (library), and ours for the provided deltas
-    """
-    from subsample_pld_pmf import subsample_pld_pmf
+    versions: List[Dict[str, Any]] = []
 
-    # Create the PMFs on the requested grid
-    test_pmfs = create_test_pmfs(
-        sampling_prob=sampling_prob,
-        sigma=sigma,
-        sensitivity=1.0,
-        discretization=discretization,
+    TF_subsampled_pmf = create_pld_and_extract_pmf(sigma, 1.0, sampling_prob, discretization, remove_direction)
+    TF_subsampled_losses, TF_subsampled_probs = dp_accounting_pmf_to_loss_probs(TF_subsampled_pmf)
+    versions.append({
+        'name': 'TF_subsampled',
+        'pmf': TF_subsampled_pmf,
+        'losses': TF_subsampled_losses,
+        'probs': TF_subsampled_probs,
+    })
+
+    TF_original_pmf = create_pld_and_extract_pmf(sigma, 1.0, 1.0, discretization, remove_direction)
+    TF_original_losses, TF_original_probs = dp_accounting_pmf_to_loss_probs(TF_original_pmf)
+    our_TF_subsampling_probs = subsample_losses(TF_original_losses, TF_original_probs, sampling_prob, remove_direction, normalize_lower=True)
+    our_TF_pmf = loss_probs_to_dp_accounting_pmf(
+        TF_original_losses,
+        our_TF_subsampling_probs,
+        discretization,
+        TF_original_pmf._pessimistic_estimate,
     )
+    versions.append({
+        'name': 'Our_TF_subsampling',
+        'pmf': our_TF_pmf,
+        'losses': TF_original_losses,
+        'probs': our_TF_subsampling_probs,
+    })
 
-    lib_pmf = test_pmfs['ground_truth_pmf']
-    base_pmf = test_pmfs['unamplified_pmf']
-    our_pmf = subsample_pld_pmf(base_pmf, sampling_prob)
-
-    # Build an analytic PMF on the same loss grid using the provided formula
-    # Extract the integer-index loss grid from the library PMF and map to losses
-    lib_losses, _ = dp_accounting_pmf_to_loss_probs(lib_pmf)
-    analytic_probs = subsampled_gaussian_probabilities_from_losses(
-        sigma=sigma,
-        sampling_prob=sampling_prob,
-        losses=lib_losses,
+    GT_original_losses, GT_original_probs = subsampled_gaussian_probabilities_from_losses(sigma=sigma, sampling_prob=1.0, discretization=discretization)
+    our_GT_subsampling_probs = subsample_losses(GT_original_losses, GT_original_probs, sampling_prob, remove_direction, normalize_lower=True)
+    our_GT_pmf = loss_probs_to_dp_accounting_pmf(
+        GT_original_losses,
+        our_GT_subsampling_probs,
+        discretization,
+        TF_original_pmf._pessimistic_estimate,
     )
-    from subsample_pld_pmf import loss_probs_to_dp_accounting_pmf  # local import to avoid cycles
-    analytic_pmf = loss_probs_to_dp_accounting_pmf(
-        losses=lib_losses,
-        probs=analytic_probs,
-        discretization=lib_pmf._discretization,
-        pessimistic_estimate=lib_pmf._pessimistic_estimate,
-    )
+    versions.append({
+        'name': 'Our_GT_subsampling',
+        'pmf': our_GT_pmf,
+        'losses': GT_original_losses,
+        'probs': our_GT_subsampling_probs,
+    })
 
-    # W1 distance
-    w1_distance = calc_W1_dist(our_pmf, lib_pmf)
-    w1_analytic = calc_W1_dist(analytic_pmf, lib_pmf)
+    GT_losses, GT_probs = subsampled_gaussian_probabilities_from_losses(sigma=sigma, sampling_prob=sampling_prob, discretization=discretization)
+    GT_pmf = loss_probs_to_dp_accounting_pmf(GT_losses, GT_probs, discretization, TF_original_pmf._pessimistic_estimate)
+    versions.append({
+        'name': 'GT',
+        'pmf': GT_pmf, 
+        'losses': GT_losses,
+        'probs': GT_probs,
+    })
 
-    # Epsilon from delta arrays (analytical/ref/ours)
-    eps_analytical, eps_ref, eps_ours = epsilon_from_deltas(
-        sigma=sigma,
-        q=sampling_prob,
-        delta_values=delta_values,
-        lib_pmf=lib_pmf,
-        our_pmf=our_pmf,
-        sensitivity=1.0,
-    )
-    # Epsilon via analytic PMF
-    analytic_pld = privacy_loss_distribution.PrivacyLossDistribution(pmf_remove=analytic_pmf)
-    eps_analytic_pmf = [analytic_pld.get_epsilon_for_delta(d) for d in delta_values]
+    for version in versions:
+        print(f'{version["name"]}')
+        version['eps'] = [version['pmf'].get_epsilon_for_delta(d) for d in delta_values]
+        version['W1_vs_GT'] = calc_W1_dist(version['losses'], version['probs'], GT_losses, GT_probs)
 
-    return {
-        'w1_distance': w1_distance,
-        'w1_distance_analytic': w1_analytic,
-        'epsilon_analytical': eps_analytical,
-        'epsilon_ref': eps_ref,
-        'epsilon_ours': eps_ours,
-        'epsilon_analytic_pmf': eps_analytic_pmf,
-        'lib_pmf': lib_pmf,
-        'our_pmf': our_pmf,
-        'analytic_pmf': analytic_pmf,
-    }
-
-def epsilon_from_deltas(
-    sigma: float,
-    q: float,
-    delta_values: List[float],
-    lib_pmf,
-    our_pmf,
-    sensitivity: float = 1.0,
-) -> Tuple[List[float], List[float], List[float]]:
-    """Compute epsilon arrays for analytical, library and ours given deltas."""
-    lib_pld = privacy_loss_distribution.PrivacyLossDistribution(pmf_remove=lib_pmf)
-    our_pld = privacy_loss_distribution.PrivacyLossDistribution(pmf_remove=our_pmf)
-    eps_analytical: List[float] = []
-    eps_ref: List[float] = []
-    eps_ours: List[float] = []
-    for delta in delta_values:
-        eps_analytical.append(
-            analytic_subsampled_epsilon_for_delta(sigma=sigma, q=q, delta=delta, sensitivity=sensitivity)
-        )
-        eps_ref.append(lib_pld.get_epsilon_for_delta(delta))
-        eps_ours.append(our_pld.get_epsilon_for_delta(delta))
-    return eps_analytical, eps_ref, eps_ours
-
-# Analytical privacy calculation functions
-
-def compute_delta(epsilon: float, noise_multiplier: float) -> float:
-    """
-    Compute exact delta for the Gaussian mechanism given epsilon and noise multiplier.
-    
-    This implementation matches the dp-accounting library's implementation.
-    
-    Args:
-        epsilon: The privacy parameter epsilon
-        noise_multiplier: The noise multiplier (sigma/sensitivity)
-        
-    Returns:
-        The corresponding delta value
-    """
-    # The standard deviation is noise_multiplier * sensitivity, but we've already
-    # incorporated sensitivity into noise_multiplier
-    if noise_multiplier == 0:
-        return 0 if epsilon == float('inf') else 1
-    
-    # The exact formula for delta
-    return stats.norm.cdf(0.5/noise_multiplier - epsilon*noise_multiplier) - \
-           np.exp(epsilon) * stats.norm.cdf(-0.5/noise_multiplier - epsilon*noise_multiplier)
-
-def gaussian_epsilon_for_delta(sigma: float, sensitivity: float, delta: float) -> float:
-    """Compute epsilon for the Gaussian mechanism given delta via binary search."""
-    noise_multiplier = sigma / sensitivity
-    def delta_for_eps(eps: float) -> float:
-        return compute_delta(eps, noise_multiplier)
-    eps_low = 0.0
-    eps_high = 100.0
-    if delta_for_eps(eps_high) > delta:
-        return float('inf')
-    while eps_high - eps_low > 1e-6:
-        eps_mid = (eps_low + eps_high) / 2.0
-        if delta_for_eps(eps_mid) <= delta:
-            eps_high = eps_mid
-        else:
-            eps_low = eps_mid
-    return eps_high
-
-def analytic_subsampled_epsilon_for_delta(
-    sigma: float,
-    q: float,
-    delta: float,
-    sensitivity: float = 1.0,
-) -> float:
-    """Analytical ε(δ) for subsampled Gaussian: ε' = log(1 + q (exp(ε_orig(δ/q)) - 1))."""
-    if q <= 0.0 or q > 1.0:
-        raise ValueError("Sampling probability must be in (0, 1]")
-    if q == 1.0:
-        return gaussian_epsilon_for_delta(sigma=sigma, sensitivity=sensitivity, delta=delta)
-    adjusted_delta = min(delta / q, 1.0)
-    eps_orig = gaussian_epsilon_for_delta(sigma=sigma, sensitivity=sensitivity, delta=adjusted_delta)
-    return float(np.log(1.0 + q * (np.exp(eps_orig) - 1.0)))
-
- 
+    return versions

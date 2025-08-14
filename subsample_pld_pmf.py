@@ -100,7 +100,7 @@ def loss_probs_to_dp_accounting_pmf(losses: np.ndarray, probs: np.ndarray, discr
         pessimistic_estimate=pessimistic_estimate
     )
 
-def subsample_losses(losses: np.ndarray, probs: np.ndarray, sampling_prob: float, remove_direction: bool) -> np.ndarray:
+def subsample_losses(losses: np.ndarray, probs: np.ndarray, sampling_prob: float, remove_direction: bool, normalize_lower: bool) -> np.ndarray:
     """    
     Given a PDF p_i (probs) over l_i (losses) between distributions P and Q and c (sampling_prob),
     compute the PDF p'_i over the same losses between:
@@ -139,21 +139,35 @@ def subsample_losses(losses: np.ndarray, probs: np.ndarray, sampling_prob: float
     # Transform reference losses using the formula ln(1 + (exp(l_i) - 1)/q)
     transformed_losses = stable_subsampling_loss(losses, sampling_prob, remove_direction)
 
-    # Compute (q + exp(-l_j) * (1-q)) * p_j in a stable manner
-    # For numerical stability, this requires renomalizing lower_probs first
+    # Compute lower distribution weights: q_j = e^{-l_j} p_j
     lower_probs = np.zeros_like(probs)
     lower_probs[probs > 0] = np.exp(np.log(probs[probs > 0]) - losses[probs > 0])
-    lower_probs /= np.sum(lower_probs)
-    mix_probs = lower_probs + sampling_prob * (probs - lower_probs)
+    if normalize_lower:
+        lower_probs /= np.maximum(1, np.sum(lower_probs))
+        
     if remove_direction:
-        probs_cumsum = np.cumsum(mix_probs)
+        # P'_cdf(i) = (1-q) * Q_cdf(j(i)) + q * P_cdf(j(i))
+        probs_cumsum = (1.0 - sampling_prob) * np.cumsum(lower_probs) + sampling_prob * np.cumsum(probs)
     else:
         probs_cumsum = np.cumsum(probs)
+
+    # #plot orobs cumsum and lower probs cumsum
+    # import matplotlib.pyplot as plt
+    # plt.plot(1-probs_cumsum, label='1-upper_probs_cumsum')
+    # plt.plot(1-np.cumsum(lower_probs), label='1-lower_probs_cumsum')
+    # plt.legend()
+    # plt.yscale('log')
+    # plt.show()
+ 
     # Inclusive prefix sums with a leading zero; supports prev = -1 for first interval
     probs_cumsum = np.concatenate(([0.0], probs_cumsum))
+    # probs_cumsum *= ((1-sampling_prob) * np.sum(lower_probs) + sampling_prob * np.sum(probs)) / np.max(probs_cumsum)
+    # Debug print removed for cleanliness
 
     # For each transformed loss l, find the largest index i where losses[i] <= l
     indices = np.searchsorted(losses, transformed_losses, side='right') - 1
+    # print(f'Max(transformed_losses) = {np.max(transformed_losses)}, max(losses) = {np.max(losses)}, max index = {np.max(indices)-1}, size = {np.size(indices)}, ind max loss = {np.searchsorted(losses, np.max(losses), side="right") - 1}')
+
     # Compute the previous index while guarding against decreasing I(l_i) due to numerical quirks
     prev_indices = np.minimum(np.concatenate(([-1], indices[:-1])), indices)
     # Bin i mass = sum_{j=prev+1..indices[i]} new_probs[j]
@@ -165,6 +179,8 @@ def stable_subsampling_loss(losses: np.ndarray, sampling_prob: float = 0.1, remo
         if remove_direction: l'_i =  ln(1+(e^{ l_i}-1)/q)
         else:                l'_i = -ln(1+(e^{-l_i}-1)/q)
     """
+    if losses.ndim != 1:
+        raise ValueError("losses must be a 1-D array")
     new_losses = np.zeros_like(losses)
 
     if not remove_direction:

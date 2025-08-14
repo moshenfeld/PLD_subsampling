@@ -8,6 +8,7 @@ def create_pld_and_extract_pmf(
     sensitivity: float,
     sampling_prob: float,
     value_discretization_interval: float,
+    remove_direction: bool = True,
 ):
     if sampling_prob < 1.0:
         pld = privacy_loss_distribution.from_gaussian_mechanism(
@@ -24,7 +25,7 @@ def create_pld_and_extract_pmf(
             value_discretization_interval=value_discretization_interval,
             pessimistic_estimate=True,
         )
-    return pld._pmf_remove
+    return pld._pmf_remove if remove_direction else pld._pmf_add
 
 
 def create_test_pmfs(

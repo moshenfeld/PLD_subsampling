@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 
 from .testing.test_utils import run_all_experiments
 from .testing.plot_utils import create_pmf_cdf_plot, create_epsilon_delta_plot
-from .analytic_Gaussian import Gaussian_epsilon_for_delta
+from .testing.analytic_Gaussian import Gaussian_epsilon_for_delta
 
 
 def main():

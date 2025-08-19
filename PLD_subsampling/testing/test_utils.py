@@ -86,5 +86,3 @@ def calc_W1_dist(losses1, probs1, losses2, probs2) -> float:
     if finite_losses.size <= 1:
         return 0.0
     return float(np.sum(np.abs(ccdf1[:-1] - ccdf2[:-1]) * np.diff(finite_losses)))
-
-

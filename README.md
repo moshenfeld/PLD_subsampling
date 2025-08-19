@@ -9,8 +9,10 @@ Implements and evaluates privacy amplification by subsampling for Privacy Loss D
     - `stable_subsampling_loss`: numerically stable loss mapping
     - `exclusive_ccdf_from_pdf`: CCDF helper (exclusive tail)
     - `subsample_losses`: transforms a PMF on a uniform loss grid
-  - `wrappers/dp_accounting_wrappers.py`: Thin wrappers around `dp-accounting` (construct PLDs, amplify PLDs separately for remove/add), plus PMF bridge utilities
-    - `amplify_pld_separate_directions(base_pld, sampling_prob, return_pld=False)`: returns a dict with `'pmf_remove'` and `'pmf_add'`. If `return_pld=True`, attempts to build a `PrivacyLossDistribution` from the two PMFs, falling back to the dict if unsupported by the installed `dp-accounting` version.
+  - `wrappers/dp_accounting_wrappers.py`: Thin wrappers around `dp-accounting` (construct PLDs, amplify PLDs separately for remove/add), plus PMF/PLD utilities
+    - `amplify_pld_separate_directions(base_pld, sampling_prob) -> PrivacyLossDistribution`: returns a PLD with amplified remove/add PMFs
+    - `scale_pmf_infinity_mass(pmf, delta) -> PMF`: increases the infinity mass by `delta` and scales all finite probabilities by `(1-β-δ)/(1-β)` preserving PMF type (dense/sparse)
+    - `scale_pld_infinity_mass(pld, delta) -> PrivacyLossDistribution`: applies the same infinity-mass change to both directions of a PLD and returns a new PLD
   - `testing/`
     - `analytic_Gaussian.py`: Analytical PLD and epsilon(δ) formulas for Gaussian mechanism
     - `test_utils.py`: Experiment runners (`run_experiment`, `run_multiple_experiments`)
@@ -41,6 +43,33 @@ python -m PLD_subsampling.main
 ```
 
 Figures are written to `plots/` (treat this directory as build output).
+
+### Usage examples
+
+Scale infinity mass on a PMF and a PLD (see `PLD_subsampling/example.ipynb` for a full demo):
+
+```python
+from PLD_subsampling.wrappers.dp_accounting_wrappers import (
+    scale_pmf_infinity_mass,
+    scale_pld_infinity_mass,
+)
+from dp_accounting.pld import privacy_loss_distribution
+
+# Build a fresh PLD
+pld = privacy_loss_distribution.from_gaussian_mechanism(
+    standard_deviation=1.0,
+    sensitivity=1.0,
+    value_discretization_interval=1e-4,
+    sampling_prob=0.1,
+    pessimistic_estimate=True,
+)
+
+# Scale a single PMF
+pmf_scaled = scale_pmf_infinity_mass(pld._pmf_remove, delta=1e-4)
+
+# Scale both directions of the PLD
+pld_scaled = scale_pld_infinity_mass(pld, delta=1e-4)
+```
 
 ### Notes
 

@@ -1,4 +1,5 @@
 import numpy as np
+import copy
 import warnings
 from typing import Dict, Any, Union, Tuple
 
@@ -17,7 +18,12 @@ def create_pld_and_extract_pmf(
     value_discretization_interval: float,
     remove_direction: bool = True,
 ):
-    """Create a PLD PMF using dp-accounting and return the internal PMF object."""
+    """Create a PLD via dp-accounting and return the internal PMF for one direction.
+
+    When `sampling_prob < 1`, `dp-accounting` constructs the amplified PLD directly. This
+    helper returns either the remove-direction PMF (`_pmf_remove`) or the add-direction
+    PMF (`_pmf_add`) from that PLD depending on `remove_direction`.
+    """
     if sampling_prob < 1.0:
         pld = privacy_loss_distribution.from_gaussian_mechanism(
             standard_deviation=standard_deviation,
@@ -39,81 +45,59 @@ def create_pld_and_extract_pmf(
 def amplify_pld_separate_directions(
     base_pld: privacy_loss_distribution.PrivacyLossDistribution,
     sampling_prob: float,
-    return_pld: bool = False,
-) -> Union[Dict[str, Any], privacy_loss_distribution.PrivacyLossDistribution]:
-    """Amplify a base PLD by subsampling, producing separate remove/add direction PMFs.
+) -> privacy_loss_distribution.PrivacyLossDistribution:
+    """Amplify a base PLD by subsampling and return a new PLD with separate directions.
 
-    If return_pld is True, attempts to construct and return a PrivacyLossDistribution
-    from the two amplified PMFs. If the installed dp-accounting version does not
-    support constructing a PLD from PMFs, falls back to returning the dict.
+    Internally, we read both PMFs from `base_pld`, apply our subsampling
+    transform for both directions on the shared loss grid, and reconstruct a
+    `PrivacyLossDistribution` with the two transformed PMFs.
     """
     if not (0.0 < sampling_prob <= 1.0):
         raise ValueError("sampling_prob must be in (0, 1]")
 
     if sampling_prob == 1.0:
-        if return_pld:
-            return base_pld
-        return {"pmf_remove": base_pld._pmf_remove, "pmf_add": base_pld._pmf_add}
+        return base_pld
 
-    base_losses, base_probs = dp_accounting_pmf_to_loss_probs(base_pld._pmf_remove)
 
+    base_losses_remove, base_probs_remove = dp_accounting_pmf_to_loss_probs(base_pld._pmf_remove)
     probs_remove = subsample_losses(
-        losses=base_losses,
-        probs=base_probs,
+        losses=base_losses_remove,
+        probs=base_probs_remove,
         sampling_prob=sampling_prob,
         remove_direction=True,
         normalize_lower=True,
     )
+    pmf_remove = loss_probs_to_dp_accounting_pmf(
+        losses=base_losses_remove,
+        probs=probs_remove,
+        discretization=base_pld._pmf_remove._discretization,
+        pessimistic_estimate=base_pld._pmf_remove._pessimistic_estimate,
+    )
+
+    base_losses_add, base_probs_add = dp_accounting_pmf_to_loss_probs(base_pld._pmf_add)
     probs_add = subsample_losses(
-        losses=base_losses,
-        probs=base_probs,
+        losses=base_losses_add,
+        probs=base_probs_add,
         sampling_prob=sampling_prob,
         remove_direction=False,
         normalize_lower=True,
     )
-
-    disc = float(base_pld._pmf_remove._discretization)
-    pess = bool(base_pld._pmf_remove._pessimistic_estimate)
-
-    pmf_remove = loss_probs_to_dp_accounting_pmf(
-        losses=base_losses,
-        probs=probs_remove,
-        discretization=disc,
-        pessimistic_estimate=pess,
-    )
     pmf_add = loss_probs_to_dp_accounting_pmf(
-        losses=base_losses,
+        losses=base_losses_add,
         probs=probs_add,
-        discretization=disc,
-        pessimistic_estimate=pess,
+        discretization=base_pld._pmf_add._discretization,
+        pessimistic_estimate=base_pld._pmf_add._pessimistic_estimate,
     )
 
-    if not return_pld:
-        return {"pmf_remove": pmf_remove, "pmf_add": pmf_add}
-
-    # Try to construct a PrivacyLossDistribution from the two PMFs.
-    try:
-        # Named arguments (newer versions may support this signature)
-        return privacy_loss_distribution.PrivacyLossDistribution(
-            pmf_remove=pmf_remove,
-            pmf_add=pmf_add,
-            pessimistic_estimate=pess,
-        )
-    except TypeError:
-        try:
-            # Positional fallback (older signature)
-            return privacy_loss_distribution.PrivacyLossDistribution(
-                pmf_remove, pmf_add, pess
-            )
-        except Exception as exc:
-            warnings.warn(
-                f"Failed to construct PrivacyLossDistribution from PMFs: {exc}. "
-                "Returning a dict with 'pmf_remove' and 'pmf_add' instead.")
-            return {"pmf_remove": pmf_remove, "pmf_add": pmf_add}
-
+    return privacy_loss_distribution.PrivacyLossDistribution(pmf_remove=pmf_remove, pmf_add=pmf_add)
 
 def dp_accounting_pmf_to_loss_probs(pld_pmf: Union[SparsePLDPmf, DensePLDPmf, Any]) -> Tuple[np.ndarray, np.ndarray]:
-    """Extract loss-probability mapping from PLDPmf objects as numpy arrays."""
+    """Extract a dense loss grid and probabilities from a PLD PMF.
+
+    - For dense PMFs, the probabilities are copied from the internal storage.
+    - For sparse PMFs, we expand the sparse dictionary to its contiguous loss grid.
+    - Probabilities are rescaled to sum to `(1 - infinity_mass)` to represent the finite mass only.
+    """
     if isinstance(pld_pmf, DensePLDPmf):
         probs = pld_pmf._probs
         losses = pld_pmf._lower_loss + np.arange(np.size(probs))
@@ -138,7 +122,11 @@ def dp_accounting_pmf_to_loss_probs(pld_pmf: Union[SparsePLDPmf, DensePLDPmf, An
 
 
 def loss_probs_to_dp_accounting_pmf(losses: np.ndarray, probs: np.ndarray, discretization: float, pessimistic_estimate: bool) -> SparsePLDPmf:
-    """Convert a loss-probability mapping to a dp-accounting SparsePLDPmf object."""
+    """Convert a loss-probability mapping to a dp-accounting `SparsePLDPmf`.
+
+    The resulting PMF will store mass only on the provided loss indices. The remaining mass,
+    if any, is placed at infinity.
+    """
     pos_ind = probs > 0
     losses = losses[pos_ind]
     probs = probs[pos_ind]
@@ -152,3 +140,56 @@ def loss_probs_to_dp_accounting_pmf(losses: np.ndarray, probs: np.ndarray, discr
     )
 
 
+def scale_pmf_infinity_mass(
+    pld_pmf: Union[SparsePLDPmf, DensePLDPmf, Any],
+    delta: float,
+) -> Union[SparsePLDPmf, DensePLDPmf]:
+    """Increase the infinity mass by `delta` and scale finite probabilities accordingly.
+
+    Given base infinity mass β, this returns a new PMF with:
+    - infinity mass set to β + δ
+    - finite probabilities multiplied by (1 − β − δ) / (1 − β)
+
+    The PMF type (dense or sparse) is preserved.
+    Constraints: 0 ≤ δ ≤ 1 − β.
+    """
+
+    beta = float(pld_pmf._infinity_mass)
+    finite_mass = 1.0 - beta
+    if not (0.0 <= delta <= finite_mass + 1e-18):
+        raise ValueError(
+            f"delta must satisfy 0 <= delta <= 1 - beta (beta={beta}) so that beta+delta <= 1; got {delta}."
+        )
+
+    new_infinity_mass = beta + float(delta)
+    scale = (1.0 - new_infinity_mass) / finite_mass
+
+    new_pmf = copy.deepcopy(pld_pmf)
+    if isinstance(pld_pmf, DensePLDPmf):
+        new_pmf._probs = new_pmf._probs * scale
+        new_pmf._infinity_mass = new_infinity_mass
+        return new_pmf
+
+    if isinstance(pld_pmf, SparsePLDPmf):
+        new_pmf._loss_probs = {k: v * scale for k, v in new_pmf._loss_probs.items()}
+        new_pmf._infinity_mass = new_infinity_mass
+        return new_pmf
+
+    raise AttributeError(
+        f"Unrecognized PMF format: {type(pld_pmf)}. Expected DensePLDPmf or SparsePLDPmf."
+    )
+
+def scale_pld_infinity_mass(
+    pld: privacy_loss_distribution.PrivacyLossDistribution,
+    delta: float,
+) -> privacy_loss_distribution.PrivacyLossDistribution:
+    """Apply the same infinity-mass scaling to both remove/add PMFs of a PLD.
+
+    Each internal PMF is transformed via `scale_pmf_infinity_mass` with the same delta,
+    and a new `PrivacyLossDistribution` is returned.
+    """
+    pmf_remove_scaled = scale_pmf_infinity_mass(pld._pmf_remove, delta)
+    pmf_add_scaled = scale_pmf_infinity_mass(pld._pmf_add, delta)
+    return privacy_loss_distribution.PrivacyLossDistribution(
+        pmf_remove=pmf_remove_scaled, pmf_add=pmf_add_scaled
+    )

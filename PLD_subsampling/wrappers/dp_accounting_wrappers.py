@@ -63,7 +63,6 @@ def amplify_pld_separate_directions(
         probs=base_probs_remove,
         sampling_prob=sampling_prob,
         remove_direction=True,
-        normalize_lower=True,
     )
     pmf_remove = loss_probs_to_dp_accounting_pmf(
         losses=base_losses_remove,
@@ -78,7 +77,6 @@ def amplify_pld_separate_directions(
         probs=base_probs_add,
         sampling_prob=sampling_prob,
         remove_direction=False,
-        normalize_lower=True,
     )
     pmf_add = loss_probs_to_dp_accounting_pmf(
         losses=base_losses_add,

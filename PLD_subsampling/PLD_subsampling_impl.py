@@ -38,7 +38,7 @@ def exclusive_padded_ccdf_from_pdf(probs: np.ndarray) -> np.ndarray:
     return np.flip(np.cumsum(np.flip(np.concatenate((probs, [1.0-np.sum(probs)])))))
 
 
-def subsample_losses(losses: np.ndarray, probs: np.ndarray, sampling_prob: float, remove_direction: bool, normalize_lower: bool) -> np.ndarray:
+def subsample_losses(losses: np.ndarray, probs: np.ndarray, sampling_prob: float, remove_direction: bool) -> np.ndarray:
     if sampling_prob < 0 or sampling_prob > 1:
         raise ValueError("sampling_prob must be in [0, 1]")
     if not np.all(np.diff(losses) >= 0):

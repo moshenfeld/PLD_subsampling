@@ -43,12 +43,12 @@ def run_experiment(
 
     TF_original_pmf = create_pld_and_extract_pmf(sigma, 1.0, 1.0, discretization, remove_direction)
     TF_original_losses, TF_original_probs = dp_accounting_pmf_to_loss_probs(TF_original_pmf)
-    our_TF_subsampling_probs = subsample_losses(TF_original_losses, TF_original_probs, sampling_prob, remove_direction, normalize_lower=True)
+    our_TF_subsampling_probs = subsample_losses(TF_original_losses, TF_original_probs, sampling_prob, remove_direction)
     our_TF_pmf = loss_probs_to_dp_accounting_pmf(TF_original_losses, our_TF_subsampling_probs, discretization, TF_original_pmf._pessimistic_estimate)
     versions.append({'name': 'TF_Our', 'pmf': our_TF_pmf, 'losses': TF_original_losses, 'probs': our_TF_subsampling_probs})
 
     GT_original_losses, GT_original_probs = Gaussian_PLD(sigma=sigma, sampling_prob=1.0, discretization=discretization, remove_direction=remove_direction)
-    our_GT_subsampling_probs = subsample_losses(GT_original_losses, GT_original_probs, sampling_prob, remove_direction, normalize_lower=True)
+    our_GT_subsampling_probs = subsample_losses(GT_original_losses, GT_original_probs, sampling_prob, remove_direction)
     our_GT_pmf = loss_probs_to_dp_accounting_pmf(GT_original_losses, our_GT_subsampling_probs, discretization, TF_original_pmf._pessimistic_estimate)
     versions.append({'name': 'GT_Our', 'pmf': our_GT_pmf, 'losses': GT_original_losses, 'probs': our_GT_subsampling_probs})
 

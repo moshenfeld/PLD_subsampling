@@ -30,9 +30,12 @@ def stable_subsampling_loss(losses: np.ndarray, sampling_prob: float = 0.1, remo
     return new_losses
 
 
-def exclusive_ccdf_from_pdf(probs: np.ndarray) -> np.ndarray:
-    tail_inclusive = np.flip(np.cumsum(np.flip(probs)))
-    return tail_inclusive - probs
+def exclusive_padded_ccdf_from_pdf(probs: np.ndarray) -> np.ndarray:
+    '''
+    Given an array of probabilities [p_0, p_1, ..., p_{n-1}], 
+    return the array [1, 1-p_0, 1-p_0-p_1, ..., 1-p_0-p_1-...-p_{n-1}]
+    '''
+    return np.flip(np.cumsum(np.flip(np.concatenate((probs, [1.0-np.sum(probs)])))))
 
 
 def subsample_losses(losses: np.ndarray, probs: np.ndarray, sampling_prob: float, remove_direction: bool, normalize_lower: bool) -> np.ndarray:
@@ -49,18 +52,15 @@ def subsample_losses(losses: np.ndarray, probs: np.ndarray, sampling_prob: float
         raise ValueError(f"sum(probs) = {total_prob} > 1")
     if sampling_prob == 1:
         return probs
+    
     transformed_losses = stable_subsampling_loss(losses, sampling_prob, remove_direction)
     lower_probs = np.zeros_like(probs)
     lower_probs[probs > 0] = np.exp(np.log(probs[probs > 0]) - losses[probs > 0])
-    if normalize_lower:
-        lower_probs /= np.maximum(1, np.sum(lower_probs))
+    lower_probs = lower_probs / np.sum(lower_probs)
     if remove_direction:
-        mix_ccdf = (1.0 - sampling_prob) * exclusive_ccdf_from_pdf(lower_probs) + sampling_prob * exclusive_ccdf_from_pdf(probs)
+        mix_ccdf = (1.0 - sampling_prob) * exclusive_padded_ccdf_from_pdf(lower_probs) + sampling_prob * exclusive_padded_ccdf_from_pdf(probs)
     else:
-        mix_ccdf = exclusive_ccdf_from_pdf(probs)
-    ccdf_ext = np.concatenate(([1.0], mix_ccdf))
+        mix_ccdf = exclusive_padded_ccdf_from_pdf(probs)
     indices = np.clip(np.floor((transformed_losses - float(losses[0])) / step), -1, losses.size - 1).astype(int)
     prev_indices = np.concatenate(([-1], indices[:-1]))
-    return ccdf_ext[prev_indices + 1] - ccdf_ext[indices + 1]
-
-
+    return mix_ccdf[prev_indices + 1] - mix_ccdf[indices + 1]

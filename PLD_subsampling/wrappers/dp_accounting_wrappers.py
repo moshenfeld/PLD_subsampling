@@ -6,9 +6,7 @@ from typing import Dict, Any, Union, Tuple
 from dp_accounting.pld import privacy_loss_distribution
 from dp_accounting.pld.pld_pmf import SparsePLDPmf, DensePLDPmf
 
-from ..PLD_subsampling_impl import (
-    subsample_losses,
-)
+from ..PLD_subsampling_impl import subsample_losses
 
 
 def create_pld_and_extract_pmf(

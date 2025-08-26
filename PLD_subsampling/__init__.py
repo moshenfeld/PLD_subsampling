@@ -8,7 +8,7 @@ from .wrappers.dp_accounting_wrappers import (
 )
 from .PLD_subsampling_impl import (
     subsample_losses,
-    exclusive_ccdf_from_pdf,
+    exclusive_padded_ccdf_from_pdf,
     stable_subsampling_loss,
 )
 
@@ -20,7 +20,7 @@ __all__ = [
     "scale_pmf_infinity_mass",
     "scale_pld_infinity_mass",
     "subsample_losses",
-    "exclusive_ccdf_from_pdf",
+    "exclusive_padded_ccdf_from_pdf",
     "stable_subsampling_loss",
 ]
 

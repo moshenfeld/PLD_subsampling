@@ -75,5 +75,3 @@ def Gaussian_epsilon_for_delta(sigma: float, sampling_prob: float, delta: float,
         else:
             eps_low = eps_mid
     return eps_high
-
-

@@ -158,7 +158,6 @@ def scale_pmf_infinity_mass(
 
     new_infinity_mass = infinity_mass + float(delta)
     scale = (1.0 - new_infinity_mass) / finite_mass
-    print(f'infinity mass = {infinity_mass}, finite mass = {finite_mass}, delta = {delta}, new infinity mass = {new_infinity_mass}, scale = {scale}')
     if isinstance(pld_pmf, DensePLDPmf):
         probs = pld_pmf._probs
     elif isinstance(pld_pmf, SparsePLDPmf):
@@ -169,15 +168,11 @@ def scale_pmf_infinity_mass(
         )
     # Normalize the original probabilities to sum to 1 - infinity_mass
     probs = np.clip(probs, 0.0, 1.0)
-    print(f'sum(old probs) before normalization = {np.sum(probs)}')
     probs *= finite_mass/np.sum(probs)
-    print(f'sum(old probs) after normalization = {np.sum(probs)}')
 
     # Scale the probabilities and normalize to sum to 1 - new_infinity_mass
     probs *= scale
-    print(f'sum(probs) before normalization = {np.sum(probs)}')
     probs *= (1.0 - new_infinity_mass)/np.sum(probs)
-    print(f'sum(probs) after normalization = {np.sum(probs)}')
 
     new_pmf = copy.deepcopy(pld_pmf)    
     new_pmf._infinity_mass = new_infinity_mass

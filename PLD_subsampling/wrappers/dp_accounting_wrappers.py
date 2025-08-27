@@ -108,7 +108,7 @@ def dp_accounting_pmf_to_loss_probs(pld_pmf: Union[SparsePLDPmf, DensePLDPmf, An
         probs[losses_sparse - np.min(losses_sparse)] = probs_sparse
     else:
         raise AttributeError(f"Unrecognized PMF format: {type(pld_pmf)}. Expected DensePLDPmf or SparsePLDPmf.")
-
+    probs = np.clip(probs, 0.0, 1.0)
     losses = losses.astype(np.float64) * float(pld_pmf._discretization)
     finite_target = float(max(0.0, 1.0 - pld_pmf._infinity_mass))
     sum_probs = float(np.sum(probs, dtype=np.float64))
@@ -149,31 +149,50 @@ def scale_pmf_infinity_mass(
     The PMF type (dense or sparse) is preserved.
     Constraints: 0 ≤ δ ≤ 1 − β.
     """
-
-    beta = float(pld_pmf._infinity_mass)
-    finite_mass = 1.0 - beta
+    infinity_mass = float(pld_pmf._infinity_mass)
+    finite_mass = 1.0 - infinity_mass
     if not (0.0 <= delta <= finite_mass + 1e-18):
         raise ValueError(
-            f"delta must satisfy 0 <= delta <= 1 - beta (beta={beta}) so that beta+delta <= 1; got {delta}."
+            f"delta must satisfy 0 <= delta <= 1 - infinity_mass (infinity_mass={infinity_mass}) so that beta+delta <= 1; got {delta}."
         )
 
-    new_infinity_mass = beta + float(delta)
+    new_infinity_mass = infinity_mass + float(delta)
     scale = (1.0 - new_infinity_mass) / finite_mass
-
-    new_pmf = copy.deepcopy(pld_pmf)
+    print(f'infinity mass = {infinity_mass}, finite mass = {finite_mass}, delta = {delta}, new infinity mass = {new_infinity_mass}, scale = {scale}')
     if isinstance(pld_pmf, DensePLDPmf):
-        new_pmf._probs = new_pmf._probs * scale
-        new_pmf._infinity_mass = new_infinity_mass
-        return new_pmf
+        probs = pld_pmf._probs
+    elif isinstance(pld_pmf, SparsePLDPmf):
+        probs = np.array(list(pld_pmf._loss_probs.values()))
+    else:
+        raise AttributeError(
+            f"Unrecognized PMF format: {type(pld_pmf)}. Expected DensePLDPmf or SparsePLDPmf."
+        )
+    # Normalize the original probabilities to sum to 1 - infinity_mass
+    probs = np.clip(probs, 0.0, 1.0)
+    print(f'sum(old probs) before normalization = {np.sum(probs)}')
+    probs *= finite_mass/np.sum(probs)
+    print(f'sum(old probs) after normalization = {np.sum(probs)}')
 
-    if isinstance(pld_pmf, SparsePLDPmf):
-        new_pmf._loss_probs = {k: v * scale for k, v in new_pmf._loss_probs.items()}
-        new_pmf._infinity_mass = new_infinity_mass
-        return new_pmf
+    # Scale the probabilities and normalize to sum to 1 - new_infinity_mass
+    probs *= scale
+    print(f'sum(probs) before normalization = {np.sum(probs)}')
+    probs *= (1.0 - new_infinity_mass)/np.sum(probs)
+    print(f'sum(probs) after normalization = {np.sum(probs)}')
 
-    raise AttributeError(
-        f"Unrecognized PMF format: {type(pld_pmf)}. Expected DensePLDPmf or SparsePLDPmf."
-    )
+    new_pmf = copy.deepcopy(pld_pmf)    
+    new_pmf._infinity_mass = new_infinity_mass
+    if not np.all(probs >= 0.0):
+        min_prob = np.min(probs)
+        argmin_prob = np.argmin(probs)
+        raise ValueError(f"probs must be non-negative, but p[{argmin_prob}] = {min_prob}")
+    if not np.sum(probs) <= 1.0 + 1e-12:
+        raise ValueError(f"sum(probs) = {np.sum(probs)} > 1 after rescahling!")
+
+    if isinstance(pld_pmf, DensePLDPmf):
+        new_pmf._probs = probs
+    else:
+        new_pmf._loss_probs = {k: v for k, v in zip(new_pmf._loss_probs.keys(), probs)}
+    return new_pmf
 
 def scale_pld_infinity_mass(
     pld: privacy_loss_distribution.PrivacyLossDistribution,
